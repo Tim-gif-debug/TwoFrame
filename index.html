@@ -731,6 +731,9 @@ input[type=range].fine { outline: 2px solid var(--acc); outline-offset: 3px; bor
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 #stage.snapped .stagebox { animation: snapPulse .18s ease-out; }
 @keyframes snapPulse { 0% { box-shadow: 0 0 0 2px rgba(255, 45, 85, .9); } 100% { box-shadow: 0 0 0 2px rgba(255, 45, 85, 0); } }
+#lab .topbar { flex-wrap: wrap; height: auto; min-height: 50px; padding-top: 6px; padding-bottom: 6px; row-gap: 6px; }
+.labsave { flex: 1; min-height: 44px; font-size: 15px; }
+body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
 
 </style>
 </head>
@@ -12861,7 +12864,7 @@ Object.assign(UI, {
     document.body.appendChild(el('section', { id: 'lab' },
       el('header', { class: 'topbar' }, el('button', { class: 'ib', title: 'Back', onclick: close, html: ICON.back }), el('b', {}, 'Effect Lab'), modeC, modeS, el('span', { class: 'grow' }),
         el('button', { class: 'chip', onclick: guide }, 'Guide'), el('button', { class: 'chip', onclick: () => this.effectHelp() }, 'AI prompt'), el('button', { class: 'chip', onclick: mine }, 'My effects'), el('button', { class: 'exportbtn', onclick: save }, el('span', {}, 'Save'))),
-      el('div', { class: 'labbody' }, el('div', { class: 'labside' }, view, msg, controls), edit), file));
+      el('div', { class: 'labbody' }, el('div', { class: 'labside' }, view, msg, el('div', { class: 'btnrow' }, el('button', { class: 'btn primary labsave', onclick: save }, 'Save effect'), el('button', { class: 'btn', onclick: mine }, 'My effects')), controls), edit), file));
     setMode('code'); raf = requestAnimationFrame(tick);
     return { build, setMode, get def() { return def; }, get rec() { return rec; }, save, close, code };
   },
