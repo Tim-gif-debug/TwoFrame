@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover lets the editor reach under the iPhone notch and home bar;
+     the CSS keeps buttons out of those areas with safe-area padding. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0f0f10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TwoFrame">
+<title>TwoFrame</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f0f10'/%3E%3Crect x='6' y='8' width='9' height='16' rx='2' fill='%2314e0c8'/%3E%3Crect x='17' y='8' width='9' height='16' rx='2' fill='%23ff4f8b'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="desktop.css">
+<link rel="stylesheet" href="mobile.css">
+<link rel="stylesheet" href="plus.css">
+</head>
+<body class="lay-mobile">
+
+<!-- ======================= Home screen ======================= -->
+<section id="home" class="screen">
+  <div class="homewrap">
+    <div class="brand"><span class="logo"><i></i><i></i></span><h1>TwoFrame</h1></div>
+    <div class="homebig">
+      <button class="newproj" onclick="UI.newProjectDialog()"><span class="plus" data-icon="plus"></span><b>New project</b></button>
+      <button class="openproj" onclick="UI.openProjectFile()"><span data-icon="folder"></span><b>Open project file</b><small>.twoframe.zip</small></button>
+    </div>
+    <div class="homeact">
+      <button class="hchip" onclick="UI.effectLibrary()"><span data-icon="fx"></span>Effects</button>
+      <button class="hchip" onclick="UI.layoutDialog()"><span data-icon="gear"></span>Layout</button>
+      <span class="note" id="fxCount"></span>
+    </div>
+    <h2>Projects</h2>
+    <div id="projectList"></div>
+  </div>
+</section>
+
+<!-- ======================= Editor ======================= -->
+<section id="editor" class="screen hidden">
+  <header class="topbar">
+    <button class="ib" title="Close project" aria-label="Close project" onclick="UI.showHome()" data-icon="close"></button>
+    <b id="projName" title="Project settings" onclick="UI.openTool('canvas')"></b>
+    <span class="grow"></span>
+    <span id="specChip" class="chip ghost d-only"></span>
+    <button class="chip" id="qualityBtn" title="Preview quality (Full, Half, Quarter)" onclick="UI.cycleQuality()">Half</button>
+    <button class="ib sm" title="Canvas and settings" aria-label="Settings" onclick="UI.openTool('canvas')" data-icon="gear"></button>
+    <button class="exportbtn" onclick="UI.exportDialog()"><span data-icon="download"></span><span>Export</span></button>
+  </header>
+
+  <div class="work">
+    <!-- Computer: media, text, effects and other assets -->
+    <aside id="leftPanel" class="panel d-only">
+      <nav id="leftTabs"></nav>
+      <div id="leftBody" class="pbody"></div>
+    </aside>
+    <div class="res v d-only" data-res="left" title="Drag to resize"></div>
+
+    <main class="center">
+      <div id="stage">
+        <div class="stagebox">
+          <canvas id="gl" width="540" height="960"></canvas>
+          <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+      <div id="transport">
+        <span id="timecode"><b>00:00</b> / 00:00</span>
+        <span class="grow"></span>
+        <button class="ib sm d-only" title="Previous keyframe" onclick="UI.kfJump(-1)" data-icon="kfPrev"></button>
+        <button class="ib sm" id="kfAddBtn" title="Add or remove keyframe at playhead (K)" onclick="UI.kfToggle()" data-icon="diamond"></button>
+        <button class="ib sm d-only" title="Next keyframe" onclick="UI.kfJump(1)" data-icon="kfNext"></button>
+        <button class="ib sm d-only" title="Back one frame (Left arrow)" onclick="UI.stepFrames(-1)" data-icon="stepBack"></button>
+        <button class="ib play" id="playBtn" title="Play / pause (Space)" aria-label="Play" onclick="Player.shuttle = 0; Player.toggle()"></button>
+        <button class="ib sm d-only" title="Forward one frame (Right arrow)" onclick="UI.stepFrames(1)" data-icon="stepFwd"></button>
+        <span class="grow"></span>
+        <button class="ib sm" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo" onclick="App.undo()" data-icon="undo"></button>
+        <button class="ib sm" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" onclick="App.redo()" data-icon="redo"></button>
+        <button class="ib sm d-only" id="loopBtn" title="Loop" aria-label="Loop" onclick="App.loop = !App.loop; UI.updateTransport()" data-icon="loop"></button>
+        <button class="ib sm m-only" title="Full screen preview" onclick="UI.togglePreviewOnly()" data-icon="fit"></button>
+      </div>
+    </main>
+
+    <div class="res v d-only" data-res="right" title="Drag to resize"></div>
+    <!-- Computer: inspector on the right. Phone: bottom sheet. -->
+    <aside id="sheet" class="panel">
+      <div class="sheethead"><span class="grab"></span><b id="sheetTitle"></b><span class="grow"></span><button class="ib sm m-only" title="Done" aria-label="Done" onclick="UI.closeSheet()" data-icon="check"></button></div>
+      <div id="inspTabs"></div>
+      <div id="panelBody" class="pbody"></div>
+    </aside>
+  </div>
+
+  <div class="res h d-only" data-res="tl" title="Drag to resize"></div>
+  <div id="timeline">
+    <div id="tlbar">
+      <button class="ib xs" id="snapBtn" title="Snapping" onclick="App.snapping = !App.snapping; try { localStorage.setItem('tf.snap', App.snapping ? '1' : '0') } catch (e) {}; UI.updateTransport()" data-icon="snap"></button>
+      <button class="ib xs" id="magBtn" title="Magnetic main track" onclick="App.change(p => { p.magnetic = !p.magnetic; if (p.magnetic) App.compactMain(); }); UI.refresh()" data-icon="magnet"></button>
+      <button class="ib xs" id="multiBtn" title="Multi-select" onclick="UI.multi = !UI.multi; UI.updateTransport(); UI.refreshPanel()" data-icon="select"></button>
+      <button class="ib xs" title="Add marker (M)" onclick="App.addMarker()" data-icon="marker"></button>
+      <button class="ib xs" title="Split at playhead (S)" onclick="App.split()" data-icon="split"></button>
+      <button class="ib xs d-only" title="Delete (Delete)" onclick="App.remove()" data-icon="trash"></button>
+      <span class="grow"></span>
+      <button class="ib xs" title="Zoom out" onclick="UI.zoom(1 / 1.4)" data-icon="minus"></button>
+      <input type="range" id="zoomSlider" min="1.4" max="7.1" step="0.01" title="Timeline zoom" oninput="UI.setZoom(Math.exp(+this.value))">
+      <button class="ib xs" title="Zoom in" onclick="UI.zoom(1.4)" data-icon="plus"></button>
+      <button class="ib xs" title="Fit timeline to window" onclick="UI.zoomFit()" data-icon="fit"></button>
+    </div>
+    <div id="tlScroll">
+      <div id="tlInner">
+        <div id="ruler"></div>
+        <div id="tracks"></div>
+        <div id="tlPlayhead" class="d-only"><i></i></div>
+        <div id="boxSel"></div>
+      </div>
+    </div>
+    <div id="playhead" class="m-only"></div>
+    <button id="tlAdd" class="m-only" title="Add media" aria-label="Add media" onclick="UI.pickMedia({})" data-icon="plus"></button>
+  </div>
+  <nav id="toolbar" class="m-only"></nav>
+</section>
+
+<div id="modal" class="hidden"></div>
+<div id="videoPool" aria-hidden="true"></div>
+<input type="file" id="fileMedia" accept="video/*,image/*,audio/*,.mov,.mp4,.m4v,.heic,.mp3,.m4a,.wav,.aac" multiple hidden>
+<input type="file" id="fileFx" accept=".xml,.zip,text/xml,application/xml,application/zip" multiple hidden>
+<input type="file" id="fileAny" hidden>
+
+<!-- Scripts load in order; each file adds one area of the app.
+     No build step: GitHub Pages serves these files as they are. -->
+<script src="mp4-muxer.js"></script>
+<script src="util.js"></script>
+<script src="library.js"></script>
+<script src="library-more.js"></script>
+<script src="pack-a.js"></script>
+<script src="pack-b.js"></script>
+<script src="transitions.js"></script>
+<script src="engine.js"></script>
+<script src="media.js"></script>
+<script src="keyframes.js"></script>
+<script src="hold.js"></script>
+<script src="fonts.js"></script>
+<script src="text.js"></script>
+<script src="draw2d.js"></script>
+<script src="render.js"></script>
+<script src="templates.js"></script>
+<script src="audio.js"></script>
+<script src="captions.js"></script>
+<script src="export.js"></script>
+<script src="projectfile.js"></script>
+<script src="app.js"></script>
+<script src="device.js"></script>
+<script src="icons.js"></script>
+<script src="ui.js"></script>
+<script src="timeline.js"></script>
+<script src="lanes.js"></script>
+<script src="canvas-tools.js"></script>
+<script src="expressions.js"></script>
+<script src="charts.js"></script>
+<script src="timeline-plus.js"></script>
+<script src="tools.js"></script>
+<script src="captions-plus.js"></script>
+<script src="export-plus.js"></script>
+<script src="audio-plus.js"></script>
+<script src="retouch.js"></script>
+<script src="skin.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
