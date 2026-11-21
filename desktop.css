@@ -1,0 +1,26 @@
+/* ==========================================================================
+   Computer layout: assets on the left, preview in the middle, inspector on
+   the right and a full-width timeline below. Drag the thin lines between
+   areas to resize them; sizes are remembered.
+   ========================================================================== */
+body.lay-desktop .topbar { height: 50px; padding: 0 12px; }
+body.lay-desktop #projName { max-width: 30vw; }
+body.lay-desktop .work { flex-direction: row; }
+body.lay-desktop #leftPanel { width: var(--left-size); flex-direction: row; border-right: 1px solid #1c1c1f; }
+body.lay-desktop #leftBody { padding-top: 10px; }
+body.lay-desktop #sheet { width: var(--right-size); flex: none; border-left: 1px solid #1c1c1f; }
+body.lay-desktop #sheet .sheethead { display: none; }
+body.lay-desktop #sheet #inspTabs { padding-top: 10px; flex-wrap: wrap; }
+body.lay-desktop #transport { border-top: 1px solid #1c1c1f; background: var(--bg); }
+body.lay-desktop #timeline { height: var(--tl-size); border-top: 1px solid #1c1c1f; }
+body.lay-desktop .track { margin-bottom: 4px; }
+body.lay-desktop .thead { border-right: 1px solid var(--line); padding-right: 4px; }
+body.lay-desktop #tlScroll { scrollbar-width: thin; }
+/* Small screens in the desktop layout: narrower side panels. */
+@media (max-width: 1100px) {
+  body.lay-desktop #leftPanel { width: min(var(--left-size), 280px); }
+  body.lay-desktop #sheet { width: min(var(--right-size), 300px); }
+}
+/* Narrow left panel: shorter labels so dropdowns keep their room. */
+body.lay-desktop #leftBody .row > span:first-child { flex-basis: 84px; }
+body.lay-desktop #leftBody .prop .plabel { flex-basis: 80px; }

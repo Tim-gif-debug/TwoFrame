@@ -1,0 +1,77 @@
+/* ==========================================================================
+   Phone layout (CapCut style): preview on top, a timeline with a fixed
+   centre playhead, and a tool bar along the bottom. Tools open as a sheet
+   that takes the timeline's place. Every tap target is at least 44px.
+   ========================================================================== */
+body.lay-mobile #editor { padding-top: var(--safe-t); padding-left: var(--safe-l); padding-right: var(--safe-r); }
+body.lay-mobile .topbar { height: 48px; padding: 0 6px; border-bottom: 0; }
+body.lay-mobile #projName { max-width: 34vw; color: var(--dim); font-weight: 500; }
+body.lay-mobile .ib { min-width: 44px; min-height: 44px; }
+body.lay-mobile .ib.xs { min-width: 40px; min-height: 40px; }
+body.lay-mobile .exportbtn { padding: 8px 14px; min-height: 40px; }
+body.lay-mobile .work { flex-direction: column; }
+body.lay-mobile .center { flex: 1; }
+body.lay-mobile #stage { min-height: 140px; background: var(--bg); }
+body.lay-mobile #transport { height: 52px; padding: 0 4px; }
+body.lay-mobile #timecode { min-width: 96px; font-size: 12px; }
+body.lay-mobile #timeline { height: min(36dvh, 300px); height: min(36vh, 300px); }
+@supports (height: 1dvh) { body.lay-mobile #timeline { height: min(36dvh, 300px); } }
+body.lay-mobile #tlbar { height: 40px; border-bottom: 0; overflow-x: auto; scrollbar-width: none; }
+body.lay-mobile #tlbar::-webkit-scrollbar { display: none; }
+body.lay-mobile #zoomSlider { display: none; }
+body.lay-mobile #tlScroll { scrollbar-width: none; overscroll-behavior-x: contain; }
+body.lay-mobile #tlScroll::-webkit-scrollbar { display: none; }
+body.lay-mobile .thead { justify-content: center; padding-left: 0; }
+body.lay-mobile .thead .ib.ghost { min-width: 34px; min-height: 34px; }
+/* The playhead stays in the middle and the clips slide under it. */
+#playhead { position: absolute; top: 40px; bottom: 0; left: calc(50% + 20px); width: 2px; margin-left: -1px; background: #fff; z-index: 7; pointer-events: none; box-shadow: 0 0 6px #000; }
+#playhead::before { content: ''; position: absolute; top: 0; left: -5px; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+#tlAdd { position: absolute; right: 10px; top: 92px; width: 44px; height: 44px; border-radius: 10px; border: 0; background: #fff; color: #000; display: grid; place-items: center; cursor: pointer; z-index: 8; box-shadow: 0 4px 14px #000a; }
+#tlAdd svg { width: 24px; height: 24px; stroke-width: 2.4; }
+body.lay-mobile .handle { width: 18px; }
+body.lay-mobile .kmark { width: 11px; height: 11px; margin-left: -5.5px; }
+body.lay-mobile .tjoin { width: 24px; height: 24px; }
+
+/* Bottom tool bar. */
+#toolbar { flex: none; display: flex; gap: 2px; overflow-x: auto; padding: 4px 4px calc(var(--safe-b) + 4px); background: #0b0b0c; border-top: 1px solid #1c1c1f; scrollbar-width: none; }
+#toolbar::-webkit-scrollbar { display: none; }
+.tbtn { flex: none; min-width: 64px; min-height: 56px; background: none; border: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px 4px 4px; cursor: pointer; color: #fff; border-radius: 10px; transition: background .12s, transform .08s; }
+.tbtn:active { transform: scale(.94); background: #ffffff0d; }
+.tbtn svg { width: 23px; height: 23px; }
+.tbtn span { font-size: 10.5px; color: #c7c7cc; }
+.tbtn.on { background: var(--acc-t); } .tbtn.on svg, .tbtn.on span { color: var(--acc); }
+.tbtn.back { min-width: 48px; border-right: 1px solid #222; border-radius: 0; margin-right: 4px; }
+.tbtn.danger svg { color: var(--danger); }
+
+/* Tool sheet: slides up where the timeline was. */
+body.lay-mobile #sheet { flex: none; height: min(48dvh, 420px); height: min(48vh, 420px); border-radius: 16px 16px 0 0; z-index: 20; animation: sheetUp .22s cubic-bezier(.2, .8, .2, 1); box-shadow: 0 -8px 30px #0008; }
+@supports (height: 1dvh) { body.lay-mobile #sheet { height: min(48dvh, 420px); } }
+@keyframes sheetUp { from { transform: translateY(40px); opacity: 0; } }
+body.lay-mobile.sheet-open #timeline { display: none; }
+body.lay-mobile .sheethead { justify-content: center; height: 46px; padding: 0 6px; }
+body.lay-mobile .sheethead .grab { display: block; position: absolute; top: 6px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: #3a3a40; }
+body.lay-mobile .sheethead .grow { display: none; }
+body.lay-mobile .sheethead .ib { position: absolute; right: 4px; top: 1px; }
+body.lay-mobile .pbody { padding: 0 14px calc(var(--safe-b) + 14px); }
+body.lay-mobile .prop .plabel { flex-basis: 84px; }
+body.lay-mobile .llabel { flex-basis: 84px; }
+body.lay-mobile .btn { min-height: 40px; }
+body.lay-mobile .btn.sm { min-height: 36px; }
+body.lay-mobile .row > span:first-child { flex-basis: 96px; }
+body.lay-mobile .ctxmenu button { min-height: 44px; }
+body.lay-mobile .toast { bottom: calc(var(--safe-b) + 84px); }
+/* Dialogs rise from the bottom on a phone. */
+body.lay-mobile #modal { place-items: end center; padding: 0; }
+body.lay-mobile .mbox { border-radius: 18px 18px 0 0; width: 100%; padding-bottom: var(--safe-b); animation: sheetUp .2s ease-out; }
+body.lay-mobile .homebig { grid-template-columns: 1fr; }
+body.lay-mobile .openproj { min-height: 70px; flex-direction: row; }
+
+/* Big preview: hide everything under the player. */
+body.preview-only #timeline, body.preview-only #toolbar, body.preview-only #sheet { display: none !important; }
+
+/* Phone on its side: shorter timeline so the preview stays usable. */
+body.lay-mobile.landscape #timeline { height: 42dvh; }
+body.lay-mobile.landscape #sheet { height: 55dvh; }
+body.lay-mobile.landscape .topbar { height: 40px; }
+body.lay-mobile.landscape #toolbar { padding-bottom: 2px; }
+body.lay-mobile.landscape .tbtn { min-height: 46px; }
