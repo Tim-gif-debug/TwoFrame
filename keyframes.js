@@ -153,7 +153,9 @@ const KF = {
   // Toggle keys for the main transform properties at the playhead (the
   // diamond button next to the playhead, and the K shortcut).
   toggleTransform(l) {
-    const paths = l.type === 'adjust' || l.type === 'audio' ? ['transform.opacity'] : ['transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity'];
+    // One keyframe is a snapshot: position, scale, rotation, opacity, volume and anything already animated.
+    const base = l.type === 'audio' ? ['volume'] : l.type === 'adjust' ? ['transform.opacity'] : ['transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity', ...(l.type === 'video' ? ['volume'] : [])];
+    const paths = [...new Set([...base, ...this.paths(l)])].filter(p => getPath(l, p) !== undefined || (l.keys && l.keys[p]));
     const t = Math.round((App.time - l.start) * App.project.fps) / App.project.fps;
     const any = paths.some(p => App.keyAt(l, p, t));
     App.change(() => {

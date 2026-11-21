@@ -141,7 +141,9 @@ const App = {
     const p = this.project; if (!p) return;
     this.time = clamp(Math.round(t * p.fps) / p.fps, 0, Math.max(0, p.duration - 1 / p.fps));
     if (Player.playing) { Player.startT = this.time; Player.startWall = performance.now(); Player.stopAudio(); Player.startAudio(p, this.time); Player.syncVideos(p, this.time, true); }
-    UI.updatePlayhead(fromScroll); UI.refreshPanelValues();
+    UI.updatePlayhead(fromScroll);
+    if (fromScroll) { if (!this._scrubRaf) this._scrubRaf = requestAnimationFrame(() => { this._scrubRaf = 0; UI.refreshPanelValues(); this.requestRender(); }); return; }
+    UI.refreshPanelValues();
     this.requestRender();
   },
   // Preview resolution: Full = project size (capped at 1920), Half, Quarter.
@@ -452,12 +454,21 @@ const App = {
     return this.keysOf(l, path).find(k => Math.abs(k.t - t) < half) || null;
   },
   setProp(l, path, v, key) {
+    const nBefore = KF.times(l).length;
+    setTimeout(() => { if (KF.times(l).length !== nBefore && !this._kfRedraw) this._kfRedraw = requestAnimationFrame(() => { this._kfRedraw = 0; UI.renderTimeline(); UI.updateTransport && UI.updateTransport(); }); }, 0);
     this.change(() => {
       const ks = this.keysOf(l, path);
       if (ks.length) {
         const t = Math.round((this.time - l.start) * this.project.fps) / this.project.fps;
         const k = this.keyAt(l, path, t);
         if (k) k.v = v; else { ks.push({ t, v, e: 'ease' }); ks.sort((a, b) => a.t - b.t); }
+      } else if (this.autoKey !== false && /^(transform\.(x|y|scale|rotation|opacity)|volume$|crop\.|fx\.)/.test(path) && typeof v !== 'boolean' && typeof v !== 'string' && KF.times(l).length) {
+        // CapCut behaviour: once a clip has keyframes, changing a setting
+        // adds a keyframe here. The clip's other keyframes keep the old value.
+        const t = Math.round((this.time - l.start) * this.project.fps) / this.project.fps, half = 0.5 / this.project.fps, old = deepCopy(getPath(l, path));
+        l.keys = l.keys || {};
+        l.keys[path] = KF.times(l).filter(x => Math.abs(x.t - t) > half).map(x => ({ t: x.t, v: deepCopy(old), e: x.e === 'hold' ? 'hold' : 'ease' }));
+        l.keys[path].push({ t: clamp(t, 0, l.dur), v, e: 'ease' }); l.keys[path].sort((a, b) => a.t - b.t);
       } else setPath(l, path, v);
     }, key || ('p:' + l.id + path));
   },

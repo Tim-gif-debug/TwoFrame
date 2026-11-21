@@ -90,3 +90,21 @@ body.big-ui .prop, body.big-ui .row { min-height: 54px; } body.big-ui .prop .pla
 body.big-ui.lay-mobile .tbtn { min-width: 82px; min-height: 74px; } body.big-ui.lay-mobile .tbtn span { font-size: 13.5px; } body.big-ui.lay-mobile .tbtn svg { width: 30px; height: 30px; }
 body.big-ui .sect { font-size: 13px; } body.big-ui #timecode { font-size: 15px; } body.big-ui .ctxmenu button { min-height: 50px; font-size: 16px; }
 body.big-ui input[type=range]::-webkit-slider-thumb { width: 26px; height: 26px; margin-top: -11px; }
+
+/* ---- CapCut-style keyframe button and diamonds ---- */
+#kfAddBtn { position: relative; }
+#kfAddBtn::after { content: '+'; position: absolute; right: 3px; bottom: 2px; font-size: 13px; font-weight: 800; line-height: 1; color: var(--text); }
+#kfAddBtn.on { color: var(--acc); background: var(--acc-t); }
+#kfAddBtn.on::after { content: '−'; color: var(--acc); }
+#kfAddBtn.on svg { fill: currentColor; }
+#kfAddBtn:disabled::after { opacity: .3; }
+.kmark { background: #fff; border-color: #000; top: 50%; margin-top: -5px; }
+.kmark.now { background: var(--acc); box-shadow: 0 0 0 2px #fff; z-index: 5; }
+.kmark::after { content: ''; position: absolute; inset: -9px; }
+body.lay-mobile .kmark { width: 12px; height: 12px; margin-left: -6px; margin-top: -6px; }
+/* ---- smoother timeline ---- */
+#tlScroll { overscroll-behavior: contain; }
+.track { contain: layout style; }
+.clip { contain: paint; transition: none; }
+.strip img { content-visibility: auto; }
+#tlPlayhead, #playhead { will-change: transform; }

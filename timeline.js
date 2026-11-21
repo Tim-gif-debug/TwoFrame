@@ -16,7 +16,9 @@ Object.assign(UI, {
     const sc = $('#tlScroll');
     sc.addEventListener('scroll', () => {
       if (Layout.mode !== 'mobile') return;
-      if (this._progTarget != null && Math.abs(sc.scrollLeft - this._progTarget) < 1) return;
+      // Scrolling the app did itself (following playback, zooming) is not a scrub.
+      if (!this._touching && performance.now() - (this._progAt || 0) < 300) return;
+      if (this._progTarget != null && Math.abs(sc.scrollLeft - this._progTarget) < 1.5) return;
       this._progTarget = null;
       if (Player.playing) Player.pause();
       App.setTime(sc.scrollLeft / this.pps, true);
@@ -24,8 +26,10 @@ Object.assign(UI, {
     // Pinch to zoom on phone; two-finger pan is the normal scroll.
     let pinch = null;
     sc.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: Math.abs(e.touches[0].clientX - e.touches[1].clientX) || 1, pps: this.pps }; }, { passive: true });
-    sc.addEventListener('touchmove', (e) => { if (!pinch || e.touches.length !== 2) return; e.preventDefault(); this.setZoom(pinch.pps * (Math.abs(e.touches[0].clientX - e.touches[1].clientX) || 1) / pinch.d); }, { passive: false });
-    sc.addEventListener('touchend', () => { pinch = null; });
+    sc.addEventListener('touchmove', (e) => { if (!pinch || e.touches.length !== 2) return; e.preventDefault(); const z = pinch.pps * (Math.abs(e.touches[0].clientX - e.touches[1].clientX) || 1) / pinch.d; this._progAt = performance.now(); if (!this._zraf) this._zraf = requestAnimationFrame(() => { this._zraf = 0; this.setZoom(this._zwant); }); this._zwant = z; }, { passive: false });
+    sc.addEventListener('touchend', (e) => { pinch = null; if (!e.touches.length) this._touching = false; });
+    sc.addEventListener('touchstart', () => { this._touching = true; }, { passive: true });
+    sc.addEventListener('touchcancel', () => { this._touching = false; });
     sc.addEventListener('wheel', (e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); this.setZoom(this.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15)); } }, { passive: false });
     // Ruler: click or drag to scrub (both layouts).
     const ruler = $('#ruler'); let scrub = false;
@@ -86,7 +90,7 @@ Object.assign(UI, {
     const tc = $('#timecode'); if (tc) tc.innerHTML = `<b>${f(App.time)}</b> / ${f(p.duration)}`;
     const sc = $('#tlScroll'); if (!sc) return;
     if (Layout.mode === 'mobile') {
-      if (!fromScroll) { const target = App.time * this.pps; if (Math.abs(sc.scrollLeft - target) > 0.5) { this._progTarget = target; sc.scrollLeft = target; } }
+      if (!fromScroll) { const target = App.time * this.pps; if (Math.abs(sc.scrollLeft - target) > 0.5) { this._progTarget = target; this._progAt = performance.now(); sc.scrollLeft = target; } }
     } else {
       const x = this.headW() + this.pad() + App.time * this.pps;
       const ph = $('#tlPlayhead'); if (ph) ph.style.transform = `translateX(${x}px)`;
@@ -190,7 +194,7 @@ Object.assign(UI, {
     if (l.transOut) clip.appendChild(el('i', { class: 'trband out', style: { width: Math.min(w, l.transOut.dur * this.pps) + 'px' } }));
     // Keyframe diamonds on the clip (draggable when selected).
     for (const kt of KF.times(l)) {
-      const d = el('i', { class: 'kmark ' + easeShape(kt.e), style: { left: kt.t * this.pps + 'px' } });
+      const d = el('i', { class: 'kmark ' + easeShape(kt.e), 'data-t': kt.t, style: { left: kt.t * this.pps + 'px' } });
       if (sel) this.dragKeyMark(d, l, kt.t);
       clip.appendChild(d);
     }

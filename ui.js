@@ -117,7 +117,8 @@ const UI = {
     else if (!this.sheetOpen) $('#sheet').classList.add('hidden');
     this.refresh(); this.onResize();
   },
-  onResize() { this.fitStage(); this.renderTimeline(); this.updatePlayhead(); this.drawOverlay(); },
+  // The keyboard and Safari's bars change the height often; only a width change needs the timeline rebuilt.
+  onResize() { this.fitStage(); if (this._lastW !== innerWidth || Layout.mode === 'desktop') { this._lastW = innerWidth; this.renderTimeline(); } this.updatePlayhead(); this.drawOverlay(); },
   fitStage() {
     const p = App.project, stage = $('#stage'), c = $('#gl'); if (!p || !stage) return;
     const r = stage.getBoundingClientRect(); const pad = 12;
@@ -134,7 +135,9 @@ const UI = {
     $('#magBtn')?.classList.toggle('on', !!(App.project && App.project.magnetic));
     $('#multiBtn')?.classList.toggle('on', this.multi);
     const l = App.layer(), kb = $('#kfAddBtn');
-    if (kb) { const on = l && ['transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity'].some(p => App.keyAt(l, p)); kb.classList.toggle('on', !!on); kb.disabled = !l; }
+    if (kb) { const on = l && KF.paths(l).some(p => App.keyAt(l, p)); kb.classList.toggle('on', !!on); kb.classList.toggle('haskeys', !!(l && KF.paths(l).length)); kb.disabled = !l; kb.title = on ? 'Remove this keyframe' : 'Add a keyframe here'; }
+    // Light up the diamond under the playhead.
+    if (l) { const now = App.time - l.start, half = 0.5 / App.project.fps; for (const d of $$('.clip.sel .kmark')) d.classList.toggle('now', Math.abs(+d.dataset.t - now) < half); }
     this.updatePlayhead();
   },
 
