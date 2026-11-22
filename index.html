@@ -6915,6 +6915,25 @@ const Sound = {
   },
 
   // ---- export: everything mixed down to one stereo buffer ---------------------
+  // Loudness of a buffer (first channel), sampled.
+  rmsOf(buf, from = 0, to = Infinity) { try { const x = buf.getChannelData(0), a = Math.max(0, Math.floor(from * buf.sampleRate)), b = Math.min(x.length, Math.ceil(to * buf.sampleRate)), st = Math.max(1, Math.floor((b - a) / 200000)); let e = 0, n = 0; for (let i = a; i < b; i += st) { e += x[i] * x[i]; n++; } return n ? Math.sqrt(e / n) : 0; } catch (e) { return 0; } },
+  // How loud the export should be at least: the loudest clip that is meant to be heard.
+  expectedLoudness(p) { let mx = 0; for (const l of p.layers) { const m = Media.items.get(l.mediaId); if (!m || !m.audio || !this.audible(l, p) || (l.video && l.video.freeze != null)) continue; const sp = this.speedOf(l), vol = this.gainAt(l, Math.min(l.dur / 2, 1), p); mx = Math.max(mx, this.rmsOf(m.audio, l.in || 0, (l.in || 0) + l.dur * sp) * Math.min(1, Math.abs(vol))); } return mx; },
+  // The same mix without the browser's offline mixer, added up sample by sample. Used when that mixer hands back silence.
+  async mixManual(p) {
+    const layers = p.layers.filter(l => this.audible(l, p) && Media.items.get(l.mediaId)?.audio && !(l.video && l.video.freeze != null)); if (!layers.length) return null;
+    const sr = 48000, len = Math.ceil(p.duration * sr), ctx = Media.getAudioCtx(), out = ctx.createBuffer(2, Math.max(1, len), sr), L = out.getChannelData(0), R = out.getChannelData(1);
+    for (const layer of layers) {
+      const m = Media.items.get(layer.mediaId); let f = null; try { f = await this.finalBuffer(m, layer); } catch (e) { } if (!f) f = { buf: m.audio, warped: false }; if (this.needsWarp(layer) && !f.warped) continue;
+      const b = f.buf, speed = f.warped ? 1 : this.speedOf(layer), x0 = b.getChannelData(0), x1 = b.numberOfChannels > 1 ? b.getChannelData(1) : x0, curve = this.shapedCurve(layer, 0, p), cn = curve.length - 1;
+      const i0 = Math.max(0, Math.round(layer.start * sr)), i1 = Math.min(len, Math.round((layer.start + layer.dur) * sr)), n = Math.max(1, i1 - i0), base = (f.warped ? 0 : (layer.in || 0)) * b.sampleRate, step = speed * b.sampleRate / sr, last = x0.length - 1;
+      for (let i = i0; i < i1; i++) { const k = i - i0, pos = base + k * step, j = Math.floor(pos); if (j >= last) break; const fr = pos - j, cp = k / n * cn, c0 = Math.floor(cp), g = curve[c0] + ((curve[Math.min(cn, c0 + 1)] - curve[c0]) * (cp - c0));
+        L[i] += (x0[j] + (x0[j + 1] - x0[j]) * fr) * g; R[i] += (x1[j] + (x1[j + 1] - x1[j]) * fr) * g; }
+    }
+    for (const ch of [L, R]) for (let i = 0; i < ch.length; i++) { const x = ch[i], a = Math.abs(x); if (a > 0.8) ch[i] = Math.sign(x) * (0.8 + 0.2 * Math.tanh((a - 0.8) / 0.2)); }
+    return out;
+  },
+  clipReport(p) { return p.layers.filter(l => l.type === 'video' || l.type === 'audio').slice(0, 8).map(l => { const m = Media.items.get(l.mediaId); return (l.type === 'video' ? 'V' : 'A') + ':' + (!m ? 'missing' : m.audio ? 'ok' + (m.audioFrom ? '/' + m.audioFrom : '') + ' ' + m.audio.sampleRate : m.noAudioTrack ? 'no track' : 'unread' + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')) + (l.muted ? ' muted' : '') + (this.audible(l, p) ? '' : ' off') + ' vol ' + (l.volume ?? 100); }).join(', ') || 'none'; },
   // Why a project has no sound to export, in words.
   whySilent(p) {
     const vids = p.layers.filter(l => (l.type === 'video' || l.type === 'audio') && !l.hidden); if (!vids.length) return 'there are no video or audio clips';
@@ -7402,6 +7421,19 @@ async function checkAAC(pack, mix) {
     return have > want * 0.3 && have < want * 3;
   } catch (e) { return null; }
 }
+// Writes up to 20 seconds of a packet list into a sound-only MP4 (the same writer the export uses) and decodes it.
+// true = it plays and is as loud as the mix, false = silent, broken or the wrong length, null = this device can't decode the test.
+async function verifyPack(pack, mix) {
+  try {
+    const target = new Mp4Muxer.ArrayBufferTarget(), mx = new Mp4Muxer.Muxer({ target, audio: { codec: pack.codec, numberOfChannels: pack.ch, sampleRate: pack.rate }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
+    let ts = 0, first = true; for (const f of pack.frames) { if (ts > 20e6) break; mx.addAudioChunkRaw(f.data, 'key', ts, f.dur, first ? { decoderConfig: { codec: pack.codec === 'aac' ? 'mp4a.40.2' : 'opus', sampleRate: pack.rate, numberOfChannels: pack.ch, ...(pack.desc ? { description: pack.desc } : {}) } } : undefined); first = false; ts += f.dur; }
+    mx.finalize(); const secs = ts / 1e6, ctx = Media.getAudioCtx(); let got;
+    try { got = await new Promise((res, rej) => { const pr = ctx.decodeAudioData(target.buffer.slice(0), res, rej); if (pr && pr.catch) pr.catch(rej); }); } catch (e) { return null; }
+    if (!got || Math.abs(got.duration - secs) > Math.max(0.4, secs * 0.2)) return false;
+    const want = Sound.rmsOf(mix, 0, secs), have = Sound.rmsOf(got); if (want < 0.002) return null;
+    return have > want * 0.3 && have < want * 3;
+  } catch (e) { return null; }
+}
 function packFromRecording(res, duration) {
   if (!res || !res.frames || !res.frames.length) return null;
   const frames = []; let seen = 0; const off = (res.offset || 0) + (res.codec === 'aac' ? res.frames[0].dur : 0);
@@ -7463,10 +7495,14 @@ const Exporter = {
     // Sound. It is encoded and checked BEFORE the picture, so a problem is known early and the
     // next way can be tried. Order: AAC from the browser's encoder (checked by decoding it again),
     // then the system recorder, then Opus. iPhones only play AAC in Photos, so Opus comes last.
-    let audioBuf = null, audioOk = false, aCodec = null, recJob = null, aRate = 48000, aCh = 2, audioNote = '', audioPack = null; const tried = [];
+    let audioBuf = null, audioOk = false, aCodec = null, recJob = null, aRate = 48000, aCh = 2, audioNote = '', audioPack = null; const tried = []; let mixHow = ''; const report = []; report.push('audio encoder: ' + ('AudioEncoder' in window ? 'yes' : 'no') + ', recorder: ' + ('MediaRecorder' in window ? ['audio/mp4', 'audio/webm'].filter(t => { try { return MediaRecorder.isTypeSupported(t); } catch (e) { return false; } }).join(' ') || 'none' : 'no') + ', context ' + ((Media.getAudioCtx() || {}).sampleRate || '?') + ' Hz ' + ((Media.getAudioCtx() || {}).state || ''));
     const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Firefox/.test(navigator.userAgent));
     if (opts.audio !== false) {
-      try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); tried.push('the sound could not be mixed (' + (e.message || e) + ')'); }
+      try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); tried.push('the sound could not be mixed (' + (e.message || e) + ')'); report.push('offline mix failed: ' + (e.message || e)); }
+      const expect = Sound.expectedLoudness(p); report.push('clips: ' + Sound.clipReport(p), 'expected loudness ' + expect.toFixed(4));
+      let mixRms = audioBuf ? Sound.rmsOf(audioBuf) : 0; report.push('mix loudness ' + mixRms.toFixed(4) + (audioBuf ? ', ' + audioBuf.duration.toFixed(1) + ' s at ' + audioBuf.sampleRate : ' (no mix)'));
+      // The browser's offline mixer gave silence (or nothing) although the clips have sound: add the clips up by hand instead.
+      if (expect > 0.002 && mixRms < Math.max(0.0005, expect * 0.02) && !opts.noManualMix) { try { const mb = await Sound.mixManual(p); if (mb) { audioBuf = mb; mixRms = Sound.rmsOf(mb); mixHow = 'mixed by hand'; report.push('hand mix loudness ' + mixRms.toFixed(4)); } } catch (e) { report.push('hand mix failed: ' + (e.message || e)); } }
       if (audioBuf) {
         if (opts.audioPack) audioPack = opts.audioPack;
         if (!audioPack && !opts.recordAudio) audioPack = await encodeMix(audioBuf, 'aac', tried);
@@ -7481,7 +7517,14 @@ const Exporter = {
           else { if (recJob) recJob.cancel(); tried.push(recJob ? (info ? 'the system recorder makes ' + info.codec + ', which iPhones do not play' : 'the system recorder did not start') : 'no system recorder for sound'); recJob = null; }
         }
         if (!audioPack && !recJob) audioPack = await encodeMix(audioBuf, 'opus', tried);
+        // Every packet list is proven by writing a small sound-only MP4 from it and decoding that on this device.
+        if (audioPack && !opts.audioPack) { let v = await verifyPack(audioPack, audioBuf); report.push(audioPack.codec + ' packets: ' + audioPack.frames.length + ', test file ' + (v === true ? 'plays' : v === false ? 'is silent or broken' : 'could not be decoded here'));
+          if (v === false && audioPack.codec === 'aac' && !audioPack.how) { tried.push('AAC from the encoder did not play back'); audioPack = null;
+            if (apple) { recJob = recordMixedAudio(audioBuf); if (recJob) { let res; recJob.done.then(r => { res = r; }); while (res === undefined) { if (this.cancel) { recJob.cancel(); this.busy = false; throw new Error('Export cancelled'); } await sleep(150); } audioPack = packFromRecording(res, p.duration); recJob = null; if (audioPack) { v = await verifyPack(audioPack, audioBuf); report.push('recorded packets: ' + audioPack.frames.length + ', test file ' + (v === true ? 'plays' : v === false ? 'is silent or broken' : 'could not be decoded here')); if (v === false) { audioPack = null; tried.push('the recorded sound did not play back either'); } } } }
+            if (!audioPack) audioPack = await encodeMix(audioBuf, 'opus', tried); }
+          if (audioPack) audioPack.checked = audioPack.checked || v === true; }
         if (audioPack) { audioOk = true; aCodec = [null, audioPack.codec]; aRate = audioPack.rate; aCh = audioPack.ch; }
+        report.push('route: ' + (audioPack ? audioPack.codec + (audioPack.how ? ' (' + audioPack.how + ')' : ' (encoder)') : recJob ? 'recorder, alongside the picture' : 'none') + (tried.length ? '; skipped: ' + tried.join('; ') : ''));
       }
     }
 
@@ -7538,7 +7581,10 @@ const Exporter = {
       }
       muxer.finalize();
       onProgress(1);
-      return { blob: new Blob([target.buffer], { type: 'video/mp4' }), W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, timing: (() => { const sec = (ms) => (ms / 1000).toFixed(ms < 9500 ? 1 : 0) + ' s', all = performance.now() - tStart; return `Took ${sec(all)} for ${p.duration.toFixed(1)} s of video: drawing the frames ${sec(tPic)}, waiting for the video encoder ${sec(tEnc)}, sound and set-up ${sec(Math.max(0, all - tPic - tEnc))}.`; })(), audioInfo: audioOk ? 'Sound: ' + (aCodec[1] === 'aac' ? 'AAC' : 'Opus' + (apple ? ' (this may not play in Photos on an iPhone)' : '')) + (audioPack && audioPack.checked ? ', checked' : '') + '.' : opts.audio === false ? '' : 'No sound in this file: ' + (audioBuf ? (tried.join('; ') || 'no way to encode sound was found') : (tried[0] || Sound.whySilent(p))) + '.', method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + audioNote + ')', silent: silentClips(p) };
+      const outBlob = new Blob([target.buffer], { type: 'video/mp4' }); let fileCheck = null;
+      // Last proof: the sound track is read back out of the finished file and decoded.
+      if (audioOk && audioBuf) { try { const tr = await AudioTrack.read(outBlob); if (!tr || !tr.m4a) { fileCheck = false; report.push('finished file: no sound track found'); } else { const ctx = Media.getAudioCtx(), got = await new Promise(async (res, rej) => { try { const pr = ctx.decodeAudioData(await tr.m4a.arrayBuffer(), res, rej); if (pr && pr.catch) pr.catch(rej); } catch (e) { rej(e); } }); const have = Sound.rmsOf(got), want = Sound.rmsOf(audioBuf); fileCheck = want < 0.002 ? null : have > want * 0.3; report.push('finished file: sound decodes, ' + got.duration.toFixed(1) + ' s, loudness ' + have.toFixed(4)); } } catch (e) { report.push('finished file: sound could not be decoded here (' + (e.message || e) + ')'); } }
+      return { blob: outBlob, soundReport: report, W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, timing: (() => { const sec = (ms) => (ms / 1000).toFixed(ms < 9500 ? 1 : 0) + ' s', all = performance.now() - tStart; return `Took ${sec(all)} for ${p.duration.toFixed(1)} s of video: drawing the frames ${sec(tPic)}, waiting for the video encoder ${sec(tEnc)}, sound and set-up ${sec(Math.max(0, all - tPic - tEnc))}.`; })(), audioInfo: audioOk ? 'Sound: ' + (aCodec[1] === 'aac' ? 'AAC' : 'Opus' + (apple ? ' (this may not play in Photos on an iPhone)' : '')) + (mixHow ? ', ' + mixHow : '') + (fileCheck === true ? ', checked in the finished file' : fileCheck === false ? '. Warning: the sound in the finished file came back silent' : audioPack && audioPack.checked ? ', checked' : '') + '.' : opts.audio === false ? '' : 'No sound in this file: ' + (audioBuf ? (tried.join('; ') || 'no way to encode sound was found') : (tried[0] || Sound.whySilent(p))) + '.', method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + audioNote + ')', silent: silentClips(p) };
     } finally {
       try { venc.close(); } catch (e) { }
       try { recJob && recJob.cancel(); } catch (e) { }
@@ -9330,6 +9376,7 @@ const UI = {
         el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.`),
         res.timing ? el('p', { class: 'hint' }, res.timing) : null,
         res.audioInfo !== undefined ? el('p', { class: 'hint', style: res.audio ? '' : 'color:#ffb454;font-weight:600' }, res.audioInfo + (res.audio && res.silent && res.silent.length ? ' No sound could be read from: ' + res.silent.join(', ') + '.' : '')) : (res.hadAudio && !res.audio ? el('p', { class: 'hint' }, 'Audio was skipped because this browser can’t encode audio.') : null),
+        res.soundReport && res.soundReport.length ? el('details', { class: 'hint' }, el('summary', {}, 'Sound details (send a screenshot of this if the sound is wrong)'), el('div', { style: 'font-size:11px;line-height:1.4;user-select:text;-webkit-user-select:text;word-break:break-word' }, res.soundReport.map(x => el('div', {}, x)))) : null,
         el('p', { class: 'hint' }, 'On iPhone, Save opens the share sheet: choose Save Video to put it in Photos.')),
         [['Close', () => { URL.revokeObjectURL(url); this.closeModal(); }], ['Save video', async () => { const r = await saveBlob(res.blob, name); if (r === 'downloaded') toast('Saved to your downloads.'); else if (r === 'saved' || r === 'shared') toast('Saved.'); }, 'primary']]);
     } catch (e) {
