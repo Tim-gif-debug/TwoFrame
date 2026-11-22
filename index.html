@@ -2768,6 +2768,8 @@ if (typeof module === "object" && typeof module.exports === "object") Object.ass
 
 </script>
 <script>
+// Text for anything that was thrown. Safari sometimes rejects with nothing at all (null), so this never assumes an Error.
+const errText = (e) => e == null ? 'no reason given' : String((e && e.message) || e);
 // ===========================================================================
 // TwoFrame: utilities, storage and zip reading
 // ===========================================================================
@@ -5280,6 +5282,24 @@ async function probeVideo(url) {
 // stream (plain AAC that every browser decodes). 16-bit PCM tracks, which some
 // cameras write, are read directly.
 const AudioTrack = {
+  // Decodes AAC packets with the browser's audio decoder into one AudioBuffer. Returns null where that decoder isn't available.
+  async decodePackets(pk, ctx, skip = 0) {
+    if (!('AudioDecoder' in window) || !('EncodedAudioChunk' in window) || !pk || !pk.list.length) return null;
+    const cfg = { codec: 'mp4a.40.' + pk.aot0, sampleRate: pk.rate, numberOfChannels: pk.cc || 2, description: pk.asc };
+    try { if (!(await AudioDecoder.isConfigSupported(cfg)).supported) return null; } catch (e) { return null; }
+    let bufs = null, pos = 0, cap = 0, rate = 0, chN = 0, err = null;
+    const dec = new AudioDecoder({ error: (e) => { err = e || new Error('decoder error'); }, output: (ad) => { try {
+      const nf = ad.numberOfFrames; if (!bufs) { rate = ad.sampleRate; chN = Math.min(2, ad.numberOfChannels); cap = (pk.list.length + 4) * Math.max(1024, nf); bufs = []; for (let c = 0; c < chN; c++) bufs.push(new Float32Array(cap)); }
+      if (pos + nf <= cap) { for (let c = 0; c < chN; c++) ad.copyTo(bufs[c].subarray(pos, pos + nf), { planeIndex: c, format: 'f32-planar' }); pos += nf; }
+    } catch (e) { err = err || e; } finally { try { ad.close(); } catch (e) { } } } });
+    dec.configure(cfg); const fd = 1024 / pk.rate * 1e6;
+    for (let k = 0; k < pk.list.length && !err; k++) { dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(k * fd), duration: Math.round(fd), data: pk.list[k] })); if (dec.decodeQueueSize > 40) await new Promise(r => setTimeout(r, 1)); }
+    if (!err) await dec.flush(); try { dec.close(); } catch (e) { }
+    if (err || !bufs || pos < 1) { if (err) throw err; return null; }
+    const n0 = skip > 0.004 && skip < 0.5 ? Math.min(pos - 1, Math.round(skip * rate)) : 0, out = ctx.createBuffer(chN, pos - n0, rate);
+    for (let c = 0; c < chN; c++) out.copyToChannel(bufs[c].subarray(n0, pos), c);
+    return out;
+  },
   async moov(blob) {
     const u32 = (d, o) => d.getUint32(o), str = (d, o) => String.fromCharCode(d.getUint8(o), d.getUint8(o + 1), d.getUint8(o + 2), d.getUint8(o + 3));
     let off = 0;
@@ -5351,7 +5371,7 @@ const AudioTrack = {
       return { skip, m4a, pcm: (ctx) => { const frames = Math.floor(total / (chs * 2)), buf = ctx.createBuffer(Math.min(2, chs), Math.max(1, frames), rate), all = new Uint8Array(total); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; } const dv = new DataView(all.buffer);
         for (let c = 0; c < Math.min(2, chs); c++) { const ch = buf.getChannelData(c); for (let f = 0; f < frames; f++) ch[f] = dv.getInt16((f * chs + c) * 2, !big) / 32768; } return buf; } };
     }
-    const adts = async () => {
+    const settings = () => {
     // AAC: the decoder settings sit in an 'esds' box somewhere inside the entry.
     let asc = null; for (let o = ent + 8; o + 12 < pick.end; o++) { if (d.getUint8(o) === 0x65 && str(o) === 'esds') { let q = o + 8; const end = Math.min(pick.end, o - 4 + u32(o - 4));
       const tag = () => { const t = d.getUint8(q++); let len = 0, b; do { b = d.getUint8(q++); len = (len << 7) | (b & 127); } while (b & 128); return [t, len]; };
@@ -5362,6 +5382,11 @@ const AudioTrack = {
     if (aot === 5 || aot === 29) aot = 2;   // HE-AAC: the plain AAC layer underneath is what gets wrapped
     if (aot < 1 || aot > 4) throw new Error('AAC type ' + aot + ' isn’t handled');
     if (!cc) { cc = d.getUint16(ent + 24) || 2; if (cc > 7) throw new Error('channel layout not handled'); }
+    return { asc, aot, fi, cc, aot0: asc[0] >> 3 }; };
+    // The bare AAC packets, for the browser's own audio decoder.
+    const packets = async () => { const st = settings(), list = new Array(n); await each((bytes, r) => { let src = 0; for (let k = 0; k < r[2]; k++) { const sz = sizeOf(r[1] + k); list[r[1] + k] = bytes.subarray(src, src + sz); src += sz; } }); return { ...st, list, rate: [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350][st.fi] || 48000 }; };
+    const adts = async () => {
+    const { aot, fi, cc } = settings();
     let total = 0; for (let k = 0; k < n; k++) total += sizeOf(k) + 7;
     if (total > 700e6) throw new Error('the sound track is too long to load');
     const outb = new Uint8Array(total); let w = 0; const pos = new Float64Array(runs.length); { let o = 0; runs.forEach((r, k) => { pos[k] = o; for (let q = 0; q < r[2]; q++) o += sizeOf(r[1] + q) + 7; }); }
@@ -5369,7 +5394,7 @@ const AudioTrack = {
       outb[o] = 0xFF; outb[o + 1] = 0xF1; outb[o + 2] = ((aot - 1) << 6) | (fi << 2) | (cc >> 2); outb[o + 3] = ((cc & 3) << 6) | (len >> 11); outb[o + 4] = (len >> 3) & 255; outb[o + 5] = ((len & 7) << 5) | 0x1F; outb[o + 6] = 0xFC;
       outb.set(bytes.subarray(src, src + sz), o + 7); o += len; src += sz; } w += bytes.length; });
     return outb.buffer; };
-    return { skip, m4a, adts, frames: n };
+    return { skip, m4a, adts, packets, frames: n };
   }
 };
 
@@ -5476,16 +5501,20 @@ const Media = {
     const fromWhole = async () => { try { m.audio = await dec(await m.blob.arrayBuffer()); } catch (e) { m.audio = null; } };
     const fromTrack = async () => {
       try { const tr = await AudioTrack.read(m.blob); if (!tr) { m.noAudioTrack = true; return; }
-        let buf = null, from = 'track';
-        if (tr.m4a) { try { buf = await dec(await tr.m4a.arrayBuffer()); } catch (e) { buf = null; } }
+        let buf = null, from = 'decoder';
+        // 1. The packets go straight into the browser's audio decoder. No file format is involved, so nothing about
+        //    the container (MOV or MP4, phone or camera) can get in the way, and memory use stays low.
+        if (tr.packets) { try { buf = await AudioTrack.decodePackets(await tr.packets(), ctx, tr.skip); } catch (e) { buf = null; m.audioNote = errText(e); } }
+        // 2. A copy of the file with the picture left out, handed to the browser's file decoder.
+        if (!buf && tr.m4a) { from = 'track'; try { buf = await dec(await tr.m4a.arrayBuffer()); } catch (e) { buf = null; } }
         if (!buf && (tr.pcm || tr.adts)) { from = 'packets'; buf = tr.pcm ? tr.pcm(ctx) : await dec(await tr.adts());
           if (buf && tr.skip > 0.004 && tr.skip < 0.5) { const n0 = Math.round(tr.skip * buf.sampleRate), nb = ctx.createBuffer(buf.numberOfChannels, Math.max(1, buf.length - n0), buf.sampleRate); for (let c = 0; c < buf.numberOfChannels; c++) nb.copyToChannel(buf.getChannelData(c).subarray(n0), c); buf = nb; } }
         if (!buf) throw new Error('the sound track could not be decoded');
         m.audio = buf || null; if (m.audio) m.audioFrom = from;
       } catch (e) { m.audioWhy = String(e && e.message || e); m.audio = null; }
     };
-    if (m.type === 'video' && !whole) { await fromTrack(); if (!m.audio && !m.noAudioTrack && mb <= 350) await fromWhole(); }
-    else { await fromWhole(); if (!m.audio && m.type === 'video') await fromTrack(); }
+    if (m.type === 'video') { await fromTrack(); if (!m.audio && !m.noAudioTrack && mb <= (phone ? 120 : 350)) await fromWhole(); }
+    else { await fromWhole(); }
     if (!m.audio && !m.noAudioTrack && m.type === 'video') { m.audioSkipped = true; if (typeof TFLog !== 'undefined') try { TFLog.add('audio', m.name + ': ' + (m.audioWhy || 'the sound could not be decoded')); } catch (e) { } }
   },
   // Small frames for the timeline filmstrip.
@@ -7429,7 +7458,7 @@ async function encodeMix(buf, codec, tried) {
     for (let off = 0; off < buf.length && !err; off += step) { const n = Math.min(step, buf.length - off), data = new Float32Array(n * 2); data.set(ch0.subarray(off, off + n), 0); data.set(ch1.subarray(off, off + n), n);
       const ad = new AudioData({ format: 'f32-planar', sampleRate: 48000, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(off / 48000 * 1e6), data }); enc.encode(ad); ad.close(); if (enc.encodeQueueSize > 16) await sleep(2); }
     if (!err) await enc.flush(); try { enc.close(); } catch (e) { }
-    if (err) { tried.push(label + ': the encoder stopped (' + (err.message || err) + ')'); return null; }
+    if (err) { tried.push(label + ': the encoder stopped (' + errText(err) + ')'); return null; }
     if (!frames.length) { tried.push(label + ': the encoder gave no data'); return null; }
     const fd = Math.round((codec === 'aac' ? 1024 : 960) / 48000 * 1e6); for (const f of frames) if (!f.dur) f.dur = fd;
     const pack = { codec, rate: 48000, ch: 2, desc, frames, checked: false };
@@ -7442,7 +7471,7 @@ async function encodeMix(buf, codec, tried) {
       const ok = await checkAAC(pack, buf); if (ok === false) { tried.push('AAC: the encoded sound came back silent or the wrong length'); return null; } pack.checked = ok === true;
     }
     return pack;
-  } catch (e) { tried.push(label + ': ' + (e.message || e)); return null; }
+  } catch (e) { tried.push(label + ': ' + errText(e)); return null; }
 }
 // Decodes the first part of an AAC packet list again and compares it with the mix. true = fine, false = wrong, null = could not be checked here.
 async function checkAAC(pack, mix) {
@@ -7459,7 +7488,7 @@ async function checkAAC(pack, mix) {
 }
 // AAC packets for a 48 kHz mix: TwoFrame's own encoder and the browser's, in the order asked for. `skip` leaves one of them out.
 async function aacPack(buf, tried, builtinFirst, noBuiltin, skip) {
-  const own = async () => { if (noBuiltin || skip === 'builtin' || typeof AacWasm === 'undefined') return null; try { const p = await AacWasm.encode(buf); if (p && p.frames.length) return p; tried.push('built-in AAC: no data'); } catch (e) { tried.push('built-in AAC: ' + (e.message || e)); } return null; };
+  const own = async () => { if (noBuiltin || skip === 'builtin' || typeof AacWasm === 'undefined') return null; try { const p = await AacWasm.encode(buf); if (p && p.frames.length) return p; tried.push('built-in AAC: no data'); } catch (e) { tried.push('built-in AAC: ' + errText(e)); } return null; };
   const web = async () => skip === 'browser' ? null : await encodeMix(buf, 'aac', tried);
   return builtinFirst ? (await own()) || (await web()) : (await web()) || (await own());
 }
@@ -7509,7 +7538,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '22 Nov D';
+const TF_BUILD = '22 Nov E';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -7542,11 +7571,11 @@ const Exporter = {
     let audioBuf = null, audioOk = false, aCodec = null, recJob = null, aRate = 48000, aCh = 2, audioNote = '', audioPack = null; const tried = []; let mixHow = ''; const report = []; report.push('build ' + TF_BUILD); report.push('audio encoder: ' + ('AudioEncoder' in window ? 'yes' : 'no') + ', recorder: ' + ('MediaRecorder' in window ? ['audio/mp4', 'audio/webm'].filter(t => { try { return MediaRecorder.isTypeSupported(t); } catch (e) { return false; } }).join(' ') || 'none' : 'no') + ', context ' + ((Media.getAudioCtx() || {}).sampleRate || '?') + ' Hz ' + ((Media.getAudioCtx() || {}).state || ''));
     const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Firefox/.test(navigator.userAgent));
     if (opts.audio !== false) {
-      try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); tried.push('the sound could not be mixed (' + (e.message || e) + ')'); report.push('offline mix failed: ' + (e.message || e)); }
+      try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); tried.push('the sound could not be mixed (' + errText(e) + ')'); report.push('offline mix failed: ' + errText(e)); }
       const expect = Sound.expectedLoudness(p); report.push('clips: ' + Sound.clipReport(p), 'expected loudness ' + expect.toFixed(4));
       let mixRms = audioBuf ? Sound.rmsOf(audioBuf) : 0; report.push('mix loudness ' + mixRms.toFixed(4) + (audioBuf ? ', ' + audioBuf.duration.toFixed(1) + ' s at ' + audioBuf.sampleRate : ' (no mix)'));
       // The browser's offline mixer gave silence (or nothing) although the clips have sound: add the clips up by hand instead.
-      if (expect > 0.002 && mixRms < Math.max(0.0005, expect * 0.02) && !opts.noManualMix) { try { const mb = await Sound.mixManual(p); if (mb) { audioBuf = mb; mixRms = Sound.rmsOf(mb); mixHow = 'mixed by hand'; report.push('hand mix loudness ' + mixRms.toFixed(4)); } } catch (e) { report.push('hand mix failed: ' + (e.message || e)); } }
+      if (expect > 0.002 && mixRms < Math.max(0.0005, expect * 0.02) && !opts.noManualMix) { try { const mb = await Sound.mixManual(p); if (mb) { audioBuf = mb; mixRms = Sound.rmsOf(mb); mixHow = 'mixed by hand'; report.push('hand mix loudness ' + mixRms.toFixed(4)); } } catch (e) { report.push('hand mix failed: ' + errText(e)); } }
       if (audioBuf) {
         if (opts.audioPack) audioPack = opts.audioPack;
         // AAC. On Apple devices TwoFrame's own encoder goes first: it makes the same file on every phone, whatever the browser can or can't do.
@@ -7628,7 +7657,10 @@ const Exporter = {
       onProgress(1);
       const outBlob = new Blob([target.buffer], { type: 'video/mp4' }); let fileCheck = null;
       // Last proof: the sound track is read back out of the finished file and decoded.
-      if (audioOk && audioBuf) { try { const tr = await AudioTrack.read(outBlob); if (!tr || !tr.m4a) { fileCheck = false; report.push('finished file: no sound track found'); } else { const ctx = Media.getAudioCtx(), got = await new Promise(async (res, rej) => { try { const pr = ctx.decodeAudioData(await tr.m4a.arrayBuffer(), res, rej); if (pr && pr.catch) pr.catch(rej); } catch (e) { rej(e); } }); const have = Sound.rmsOf(got), want = Sound.rmsOf(audioBuf); fileCheck = want < 0.002 ? null : have > want * 0.3; report.push('finished file: sound decodes, ' + got.duration.toFixed(1) + ' s, loudness ' + have.toFixed(4)); } } catch (e) { report.push('finished file: sound could not be decoded here (' + (e.message || e) + ')'); } }
+      if (audioOk && audioBuf) { try { const tr = await AudioTrack.read(outBlob); if (!tr) { fileCheck = false; report.push('finished file: no sound track found'); } else { const ctx = Media.getAudioCtx(); let got = null;
+          if (tr.packets) { try { got = await AudioTrack.decodePackets(await tr.packets(), ctx, 0); } catch (e) { got = null; } }
+          if (!got && tr.m4a) got = await new Promise(async (res) => { try { const pr = ctx.decodeAudioData(await tr.m4a.arrayBuffer(), res, () => res(null)); if (pr && pr.catch) pr.catch(() => res(null)); } catch (e) { res(null); } });
+          if (!got) report.push('finished file: has a sound track; this device could not decode it for the check'); else { const have = Sound.rmsOf(got), want = Sound.rmsOf(audioBuf); fileCheck = want < 0.002 ? null : have > want * 0.3; report.push('finished file: sound decodes, ' + got.duration.toFixed(1) + ' s, loudness ' + have.toFixed(4)); } } } catch (e) { report.push('finished file: check skipped (' + errText(e) + ')'); } }
       return { blob: outBlob, soundReport: report, W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, timing: (() => { const sec = (ms) => (ms / 1000).toFixed(ms < 9500 ? 1 : 0) + ' s', all = performance.now() - tStart; return `Took ${sec(all)} for ${p.duration.toFixed(1)} s of video: drawing the frames ${sec(tPic)}, waiting for the video encoder ${sec(tEnc)}, sound and set-up ${sec(Math.max(0, all - tPic - tEnc))}.`; })(), audioInfo: audioOk ? 'Sound: ' + (aCodec[1] === 'aac' ? 'AAC' : 'Opus' + (apple ? ' (this may not play in Photos on an iPhone)' : '')) + (mixHow ? ', ' + mixHow : '') + (fileCheck === true ? ', checked in the finished file' : fileCheck === false ? '. Warning: the sound in the finished file came back silent' : audioPack && audioPack.checked ? ', checked' : '') + '.' : opts.audio === false ? '' : 'No sound in this file: ' + (audioBuf ? (tried.join('; ') || 'no way to encode sound was found') : (tried[0] || Sound.whySilent(p))) + '.', build: TF_BUILD, method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + audioNote + ')', silent: silentClips(p) };
     } finally {
       try { venc.close(); } catch (e) { }
@@ -7853,7 +7885,7 @@ const Proxies = {
       Store.put('media', 'proxy:' + m.id, { id: 'proxy:' + m.id, type: 'proxy', name: m.name, blob }).catch(() => {});
       this.reload();
       toast('Preview copy ready. Export still uses the full-quality original.');
-    } catch (e) { toast(e.message || 'Couldn’t make the preview copy.'); }
+    } catch (e) { toast((e && e.message) || 'Couldn’t make the preview copy.'); }
     finally { v.pause(); v.remove(); UI.busy(null); }
   },
   async restore(m) {
@@ -7957,7 +7989,7 @@ const App = {
   async open(p) {
     Player.pause();
     for (const id of Array.from(Runtime.map.keys())) Runtime.drop(id);
-    this.project = this.migrate(p); this.time = 0; this.sel = null; this.selIds.clear(); this.undoStack = []; this.redoStack = [];
+    this.project = this.migrate(p); this.autoEnd(this.project); this.time = 0; this.sel = null; this.selIds.clear(); this.undoStack = []; this.redoStack = [];
     const missing = [];
     const ids = new Set();
     const walk = (ls) => { for (const l of ls) { if (l.mediaId) ids.add(l.mediaId); if (l.children) walk(l.children); } };
@@ -8004,6 +8036,7 @@ const App = {
     }
     this._lastSnap = now; this._lastSnapKey = key;
     fn(this.project);
+    this.autoEnd(this.project);
     this.save();
     this.requestRender();
     UI.updateHistoryButtons && UI.updateHistoryButtons();
@@ -8036,7 +8069,7 @@ const App = {
     if (f === undefined) {
       // Auto: as many pixels as the preview really shows on this screen, in a few fixed steps so the size doesn't keep changing.
       f = 0.5;
-      try { const cv = engine.canvas, dpr = Math.min(window.devicePixelRatio || 1, typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM ? 2 : 3), shown = Math.max(cv.clientWidth * (p.width >= p.height ? 1 : p.height / p.width), cv.clientHeight * (p.height >= p.width ? 1 : p.width / p.height)) * dpr;
+      try { const cv = engine.canvas, dpr = Math.min(window.devicePixelRatio || 1, typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM ? 1.5 : 2), shown = Math.max(cv.clientWidth * (p.width >= p.height ? 1 : p.height / p.width), cv.clientHeight * (p.height >= p.width ? 1 : p.width / p.height)) * dpr;
         if (shown > 50) { const need = shown / Math.max(p.width, p.height); f = [0.25, 0.375, 0.5, 0.75, 1].find(x => x >= need * 0.92) || 1; } } catch (e) { }
     }
     // The size only drops during playback when the device is really falling behind (see the adaptive preview), so play and pause look the same.
@@ -8098,6 +8131,13 @@ const App = {
     let t = 0;
     for (const l of p.layers.filter(l => l.track === main.id).sort((a, b) => a.start - b.start)) { l.start = Math.round(t * p.fps) / p.fps; t += l.dur; }
     this.fitDuration(p, true);
+  },
+  // The timeline ends where the last picture or video clip ends (sound alone can't make it longer), unless a length was typed in by hand.
+  autoEnd(p = this.project) {
+    if (!p || p.autoEnd === false || !p.layers.length) return;
+    const endOf = (list) => list.reduce((m, l) => Math.max(m, l.start + l.dur), 0), pics = p.layers.filter(l => l.type === 'video' || l.type === 'image'), vis = p.layers.filter(l => l.type !== 'audio' && l.type !== 'caption' && l.type !== 'adjust');
+    const end = endOf(pics.length ? pics : vis.length ? vis : p.layers); if (end < 0.05) return;
+    const d = Math.max(1 / p.fps, Math.round(end * p.fps) / p.fps); if (Math.abs(d - p.duration) > 1e-6) { p.duration = d; if (this.time > d) this.time = Math.max(0, d - 1 / p.fps); }
   },
   fitDuration(p = this.project, grow) {
     const end = Math.max(0.5, ...p.layers.map(l => l.start + l.dur));
@@ -8180,7 +8220,7 @@ const App = {
         Media.makeThumbs(m, () => { UI.renderTimeline(); UI.renderLibrary && UI.renderLibrary(); });
         if (m.audioReady) m.audioReady.then(() => { if (m.audioSkipped) toast(`The sound of ${m.name} couldn’t be read${m.audioWhy ? ' (' + m.audioWhy + ')' : ''}, so this clip will be silent. Converting it to MP4 with AAC sound fixes that.`, 8000); Sound.peaks(m).then(() => UI.renderTimeline()); });
         else if (m.type === 'audio') Sound.peaks(m).then(() => UI.renderTimeline());
-      } catch (e) { UI.busy(null); UI.modal('Couldn’t add that file', el('p', {}, e.message || String(e)), [['OK', () => UI.closeModal()]]); }
+      } catch (e) { UI.busy(null); UI.modal('Couldn’t add that file', el('p', {}, errText(e)), [['OK', () => UI.closeModal()]]); }
     }
     UI.busy(null);
     if (added) { UI.refresh(); UI.renderLibrary && UI.renderLibrary(); UI.updatePlayhead(); }
@@ -9235,7 +9275,7 @@ const UI = {
         if (!words.length) { msg.textContent = 'No speech was found.'; return; }
         Captions.makeLayer(Captions.toLines(words, maxWords), styleName);
         msg.textContent = `Done: ${words.length} words.`; this.openTool('captionEdit');
-      } catch (e) { msg.textContent = 'Captions failed: ' + (e.message || e); }
+      } catch (e) { msg.textContent = 'Captions failed: ' + errText(e); }
       finally { go.disabled = false; }
     } }, 'Generate captions');
     body.append(el('div', { class: 'btnrow' }, go, el('button', { class: 'btn', onclick: () => { Captions.cancel = true; } }, 'Cancel')), bar, msg);
@@ -9284,8 +9324,9 @@ const UI = {
     body.append(this.row('Name', el('input', { type: 'text', value: p.name, onchange: (e) => { App.change(pp => { pp.name = e.target.value || 'Untitled'; }); $('#projName').textContent = App.project.name; } })),
       num('Width', 'width', 16, 4096, 2, () => App.setPreviewQuality()), num('Height', 'height', 16, 4096, 2, () => App.setPreviewQuality()),
       this.row('Frame rate', el('select', { onchange: (e) => { App.change(pp => { pp.fps = +e.target.value; }); this.refresh(); } }, [24, 25, 30, 50, 60].map(f => el('option', { value: f, selected: p.fps === f }, f + ' fps')))),
-      num('Duration (s)', 'duration', 0.5, 3600, 0.1),
-      el('div', { class: 'btnrow' }, el('button', { class: 'btn', onclick: () => { App.change(pp => App.fitDuration(pp)); this.refresh(); } }, 'Fit duration to clips'),
+      this.row('Length (s)', el('input', { type: 'number', value: +p.duration.toFixed(2), min: 0.5, max: 3600, step: 0.1, onchange: (e) => { const v = clamp(+e.target.value || 0.5, 0.5, 3600); App.change(pp => { pp.autoEnd = false; pp.duration = v; }); this.refresh(); } })),
+      el('p', { class: 'hint' }, p.autoEnd === false ? 'The length is fixed by hand. Tap “End with the clips” to let it follow the clips again.' : 'The timeline ends where the last picture or video clip ends.'),
+      el('div', { class: 'btnrow' }, el('button', { class: 'btn', onclick: () => { App.change(pp => { pp.autoEnd = true; App.fitDuration(pp); }); this.refresh(); } }, 'End with the clips'),
         el('button', { class: 'btn', onclick: async () => { this.busy('Packing project…'); try { await ProjectFile.save(p); } finally { this.busy(null); } } }, 'Save project file')));
     this.section(body, 'Settings');
     body.append(
@@ -9350,13 +9391,13 @@ const UI = {
     let ok = 0; const errs = [];
     const take = async (name, text) => {
       try { const d = parseEffectXML(text, name); EffectLib.add(d); await Store.put('effects', d.id, { name, xml: text }); if (!engine.effectProgram(d)) errs.push(`${d.name}: shader error`); ok++; }
-      catch (e) { errs.push(e.message); }
+      catch (e) { errs.push(errText(e)); }
     };
     this.busy('Importing effects…');
     for (const f of files) {
       if (/\.zip$/i.test(f.name) || f.type === 'application/zip') {
         try { for (const z of await readZip(f)) if (/\.xml$/i.test(z.name) && !z.name.includes('__MACOSX')) await take(z.name.split('/').pop(), await z.text()); }
-        catch (e) { errs.push(`${f.name}: ${e.message}`); }
+        catch (e) { errs.push(`${f.name}: ${errText(e)}`); }
       } else await take(f.name, await f.text());
     }
     this.busy(null);
@@ -9425,7 +9466,7 @@ const UI = {
         el('p', { class: 'hint' }, 'On iPhone, Save opens the share sheet: choose Save Video to put it in Photos.')),
         [['Close', () => { URL.revokeObjectURL(url); this.closeModal(); }], ['Save video', async () => { const r = await saveBlob(res.blob, name); if (r === 'downloaded') toast('Saved to your downloads.'); else if (r === 'saved' || r === 'shared') toast('Saved.'); }, 'primary']]);
     } catch (e) {
-      this.modal('Export stopped', el('p', {}, e.message || String(e)), [['OK', () => this.closeModal()]]);
+      this.modal('Export stopped', el('p', {}, errText(e)), [['OK', () => this.closeModal()]]);
     } finally { Proxies.useOriginals(false); }
     App.requestRender();
   },
@@ -11320,7 +11361,7 @@ Object.assign(App, {
           if (m.type === 'video') { l.video = { speed: 1, interp: 'none', srcFps: m.fps || 30, ...(l.video || {}), freeze: undefined }; delete l.video.freeze; l.dur = Math.min(l.dur, m.duration / (l.video.speed || 1)); } else delete l.video;
           if (old && m.w && old.w) l.transform.scale = Math.round(l.transform.scale * Math.max(old.w / m.w, old.h / m.h) * 10) / 10; this.compactMain(p); });
         Media.makeThumbs(m, () => UI.renderTimeline()); if (m.audioReady) m.audioReady.then(() => Sound.peaks(m).then(() => UI.renderTimeline()));
-      } catch (e) { toast(e.message || 'Couldn’t replace the clip.', 4000); }
+      } catch (e) { toast((e && e.message) || 'Couldn’t replace the clip.', 4000); }
       UI.busy(null); UI.refresh();
     });
   },
@@ -11390,7 +11431,7 @@ Object.assign(UI, {
         this._pick = async (P) => {
           this._pick = null;
           try { const r = await Tracker.run(l, P, (f) => this.busy(`Tracking… ${Math.round(f * 100)}%`, () => { Tracker.cancel = true; })); this.busy(null); toast(`Tracked ${r.frames} frames${r.lost ? `, unsure on ${r.lost}` : ''}.`); }
-          catch (e) { this.busy(null); toast(e.message, 4000); }
+          catch (e) { this.busy(null); toast(errText(e), 4000); }
           this.openTool('track'); this.drawOverlay();
         };
       } }, d ? 'Track a new point' : 'Pick a point to track'), d ? el('button', { class: 'btn', onclick: () => { App.change(() => { delete l.trackData; }); this.refreshPanel(); this.drawOverlay(); } }, 'Clear track') : null));
@@ -11774,7 +11815,7 @@ Object.assign(UI, {
       else { label.textContent = 'Mixing sound…'; blob = await Exporter.wav(p); name = safe + '.wav'; note = 'WAV, 48 kHz'; }
       this.modal('Export finished', el('div', {}, kind === 'gif' || kind === 'frame' ? el('img', { src: URL.createObjectURL(blob), class: 'result', style: { maxWidth: '100%', maxHeight: '45vh' } }) : null, el('p', { class: 'hint' }, `${note}. ${(blob.size / 1048576).toFixed(2)} MB.`)),
         [['Close', () => this.closeModal()], ['Save', async () => { const r = await saveBlob(blob, name); if (r === 'downloaded') toast('Saved to your downloads.'); }, 'primary']]);
-    } catch (e) { this.modal('Export stopped', el('p', {}, e.message || String(e)), [['OK', () => this.closeModal()]]); }
+    } catch (e) { this.modal('Export stopped', el('p', {}, errText(e)), [['OK', () => this.closeModal()]]); }
     finally { Proxies.useOriginals(false); App.requestRender(); }
   }
 });
@@ -11929,7 +11970,7 @@ const FaceAI = {
       for (const base of [MP_BASE, `https://unpkg.com/@mediapipe/tasks-vision@${MP_VER}`]) {
         try { this.mod = await import(`${base}/vision_bundle.mjs`); this.vision = await this.mod.FilesetResolver.forVisionTasks(`${base}/wasm`); last = null; break; } catch (e) { last = e; }
       }
-      if (last) throw new Error('The face tools couldn’t be downloaded (' + (last.message || last) + '). They need the GitHub Pages copy opened in Safari or Chrome with an internet connection. They can’t load inside the Claude app.');
+      if (last) throw new Error('The face tools couldn’t be downloaded (' + errText(last) + '). They need the GitHub Pages copy opened in Safari or Chrome with an internet connection. They can’t load inside the Claude app.');
     }
     return this.mod;
   },
@@ -11937,7 +11978,7 @@ const FaceAI = {
     const mod = await this.lib(), key = mode === 'IMAGE' ? 'lmImage' : 'lm';
     if (!this[key]) {
       const make = (delegate) => mod.FaceLandmarker.createFromOptions(this.vision, { baseOptions: { modelAssetPath: MP_FACE_MODEL, delegate }, runningMode: mode, numFaces: 3 });
-      try { this[key] = await make(this.forceCPU ? 'CPU' : 'GPU'); } catch (e) { try { this[key] = await make('CPU'); } catch (e2) { throw new Error('The face model couldn’t start: ' + (e2.message || e2)); } }
+      try { this[key] = await make(this.forceCPU ? 'CPU' : 'GPU'); } catch (e) { try { this[key] = await make('CPU'); } catch (e2) { throw new Error('The face model couldn’t start: ' + errText(e2)); } }
     }
     return this[key];
   },
@@ -11964,7 +12005,7 @@ const FaceAI = {
         for (let f = a; f <= b; f += every) {
           if (this.cancel) throw new Error('Face analysis cancelled. What was found so far is kept.');
           if (!rec.frames[f]) { await seekVideo(v, (f + 0.5) / fps); this.ts += 40; let res;
-            try { res = lm.detectForVideo(v, this.ts); } catch (e) { if (this.forceCPU) throw new Error('Face finding failed on this device: ' + (e.message || e)); this.forceCPU = true; this.lm = null; return await this.analyze(l, every, onProgress); }
+            try { res = lm.detectForVideo(v, this.ts); } catch (e) { if (this.forceCPU) throw new Error('Face finding failed on this device: ' + errText(e)); this.forceCPU = true; this.lm = null; return await this.analyze(l, every, onProgress); }
             rec.frames[f] = this.order(prev, this.pack(res)); }
           prev = rec.frames[f]; onProgress && onProgress((f - a) / Math.max(1, b - a)); if ((f - a) % (every * 6) === 0) await sleep(0);
         }
@@ -12151,7 +12192,7 @@ Object.assign(UI, {
       try { this.busy('Loading the face model (first time only)…'); const r = await FaceAI.analyze(l, every, (f) => this.busy(`Analyzing faces… ${Math.round(f * 100)}%`, () => { FaceAI.cancel = true; }));
         this.busy(null); if (!l.effects.some(f => f.defId === 'tf.retouch')) { App.addEffect('tf.retouch'); const f = l.effects.find(x => x.defId === 'tf.retouch'); App.change(() => { Object.assign(f.params, RETOUCH_PRESETS.Natural); f.look = { name: 'Natural', amt: 1 }; }, ''); }
         toast(r.faces ? `Found ${r.faces} face${r.faces === 1 ? '' : 's'}.` : 'No faces found in this clip.'); }
-      catch (e) { this.busy(null); this.modal('Face retouch', el('p', {}, e.message || String(e)), [['OK', () => this.closeModal()]]); }
+      catch (e) { this.busy(null); this.modal('Face retouch', el('p', {}, errText(e)), [['OK', () => this.closeModal()]]); }
       this.refresh(); if (App.layer() === l && FaceAI.data.get(l.mediaId)) this.openTool('retouch');
     };
     // ---- the simple view: one tap finds the faces, then a look and one strength slider ----
@@ -12654,7 +12695,7 @@ const FrameSource = {
         // One clean second try before falling back to the slow way (seeking the video).
         this.close(st);
         try { return await this.fetch(st, t); }
-        catch (e2) { st.fails = (st.fails || 0) + 1; console.warn('Exact decoding missed a frame:', e2.message || e2); this.close(st); if (st.fails >= 4) { st.ok = false; st.why = String(e2.message || e2); } return null; }
+        catch (e2) { st.fails = (st.fails || 0) + 1; console.warn('Exact decoding missed a frame:', (e2 && e2.message) || e2); this.close(st); if (st.fails >= 4) { st.ok = false; st.why = StringerrText(e2); } return null; }
       }
     });
     st.chain = run.then(() => { }); return run;
@@ -12690,7 +12731,8 @@ const FrameSource = {
       upto = Math.min(upto, st.n - 1); if (upto <= st.fed) return;
       const a = st.fed + 1, s0 = st.offs[a], s1 = st.offs[upto] + st.size[upto]; let buf = null;
       let lo2 = s0, hi2 = s1; for (let i = a; i <= upto; i++) { lo2 = Math.min(lo2, st.offs[i]); hi2 = Math.max(hi2, st.offs[i] + st.size[i]); }
-      if (hi2 - lo2 < 48e6) buf = new Uint8Array(await st.blob.slice(lo2, hi2).arrayBuffer());
+      // One read fetches several megabytes ahead; the next calls are served from memory. (Many small reads are slow on phones.)
+      if (hi2 - lo2 < 48e6) { const w = st.win; if (w && lo2 >= w.lo && hi2 <= w.hi) { buf = w.bytes.subarray(lo2 - w.lo, hi2 - w.lo); } else { const end = Math.min(st.blob.size, Math.max(hi2, lo2 + (typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM ? 4e6 : 10e6))); const bytes = new Uint8Array(await st.blob.slice(lo2, end).arrayBuffer()); st.win = { lo: lo2, hi: lo2 + bytes.length, bytes }; buf = bytes.subarray(0, hi2 - lo2); } }
       for (let i = a; i <= upto; i++) {
         const data = buf ? buf.subarray(st.offs[i] - lo2, st.offs[i] - lo2 + st.size[i]) : new Uint8Array(await st.blob.slice(st.offs[i], st.offs[i] + st.size[i]).arrayBuffer());
         st.dec.decode(new EncodedVideoChunk({ type: st.key[i] ? 'key' : 'delta', timestamp: us(i), duration: Math.round(st.lastDelta / st.ts * 1e6), data }));
@@ -12969,7 +13011,7 @@ const flowOpts = (v) => ({ detail: v.detail ?? 0.5, cleanup: v.cleanup ?? 0.5, s
       const bar = el('div', { class: 'bar' }, el('i', {})), note = el('p', { class: 'hint' }, 'Rendering the retimed clip…');
       this.modal('Smooth preview', el('div', {}, note, bar), [['Cancel', () => { Exporter.cancel = true; }]]);
       try { await Bake.run(l, (f) => { bar.firstChild.style.width = Math.round(f * 100) + '%'; note.textContent = `Rendering the retimed clip… ${Math.round(f * 100)}%`; }); this.closeModal(); this.refresh(); toast('Smooth preview ready. Press play.'); }
-      catch (e) { this.closeModal(); if (!Exporter.cancel) this.modal('Smooth preview', el('p', {}, 'It could not be rendered: ' + (e.message || e)), [['OK', () => this.closeModal()]]); Exporter.cancel = false; }
+      catch (e) { this.closeModal(); if (!Exporter.cancel) this.modal('Smooth preview', el('p', {}, 'It could not be rendered: ' + errText(e)), [['OK', () => this.closeModal()]]); Exporter.cancel = false; }
     },
     // Smooth, spline-aware curve editor. Points snap to markers.
     curveEditor(l) {
@@ -13348,7 +13390,7 @@ Object.assign(UI, {
     // Ask what kind of code a file holds, with the best guess first, then load it converted.
     const askKind = (text, name) => {
       if (/"tfx"\s*:\s*1/.test(text)) { try { const j = JSON.parse(text); if (j.kind === 'code') text = String(j.source || ''); } catch (e) { } }
-      const guess = Lab.detect(text), pick = (k) => { this.closeModal(); try { const src = Lab.convert(text, k, name); rec = { id: uid('fx'), kind: 'code', source: src.slice(0, 20000) }; code.value = rec.source; build(); toast('Loaded. Check the preview, change anything you like, then Save.'); } catch (e) { toast(e.message || 'That code could not be read.', 5000); } };
+      const guess = Lab.detect(text), pick = (k) => { this.closeModal(); try { const src = Lab.convert(text, k, name); rec = { id: uid('fx'), kind: 'code', source: src.slice(0, 20000) }; code.value = rec.source; build(); toast('Loaded. Check the preview, change anything you like, then Save.'); } catch (e) { toast((e && e.message) || 'That code could not be read.', 5000); } };
       this.modal('What kind of code is this?', el('div', { class: 'choice' }, Lab.KINDS.map(([k, n, d]) => el('button', { class: 'choicebtn' + (k === guess ? ' on' : ''), onclick: () => pick(k) }, el('b', {}, n + (k === guess ? ' (looks like this)' : '')), el('small', {}, d)))), [['Cancel', () => this.closeModal()]]);
     };
     const mine = () => {
@@ -13365,7 +13407,7 @@ Object.assign(UI, {
     const file = el('input', { type: 'file', accept: '.tfx,application/json', style: { display: 'none' }, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
       try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1 || !(j.kind === 'code' ? typeof j.source === 'string' : Array.isArray(j.stack))) throw new Error('This isn’t a TwoFrame effect file.');
         const r = j.kind === 'code' ? { id: uid('fx'), kind: 'code', source: String(j.source).slice(0, 20000) } : { id: uid('fx'), kind: 'stack', name: String(j.name || 'Stack').slice(0, 40), stack: j.stack.slice(0, 6).filter(s => s && EffectLib.get(s.defId)).map(s => ({ defId: String(s.defId), values: { ...defaultParams(EffectLib.get(s.defId)), ...(s.values || {}) }, exposed: Array.isArray(s.exposed) ? s.exposed.map(String) : [] })) };
-        this.closeModal(); setMode(r.kind, r); toast('Loaded. Check the preview, then Save to add it to your effects.'); } catch (err) { toast(err.message || 'That file could not be read.', 5000); } } });
+        this.closeModal(); setMode(r.kind, r); toast('Loaded. Check the preview, then Save to add it to your effects.'); } catch (err) { toast((err && err.message) || 'That file could not be read.', 5000); } } });
     const save = async () => { if (dirty) build(); if (!def) { toast('Fix the problem shown under the preview first.'); return; } try { if (rec.kind === 'stack') rec.name = nameIn.value.trim() || 'My Stack'; await Lab.save(rec); toast(`Saved. “${EffectLib.get('lab.' + rec.id).name}” is now in Effects under My Effects.`, 4000); } catch (e) { toast(e.message, 5000); } };
     const close = () => { alive = false; cancelAnimationFrame(raf); clearTimeout(timer); if (tmpDef) Lab.forget(tmpDef); E.freeRT(srcRT); E.freeRT(out); gl.deleteTexture(srcTex); $('#lab')?.remove(); if (App.project) { Runtime.clearCaches(); App.requestRender(); } };
     const modeC = el('button', { class: 'chip', onclick: () => setMode('code') }, 'Code'), modeS = el('button', { class: 'chip', onclick: () => setMode('stack') }, 'No-code'), edit = el('div', { class: 'labedit' });
@@ -13489,7 +13531,7 @@ const Community = {
       const j = await r.json(); if (!j || !Array.isArray(j.effects)) throw new Error('the library file is not valid');
       this.list = j.effects.filter(e => e && e.id && (e.kind === 'code' ? typeof e.source === 'string' : Array.isArray(e.stack))); this.error = '';
       try { const s = JSON.stringify({ effects: this.list }); if (s.length < 1500000) localStorage.setItem('tf.community', s); } catch (e) { }
-    } catch (e) { this.error = String(e.message || e); }
+    } catch (e) { this.error = StringerrText(e); }
     this.loaded = true; return this.list;
   },
   // ---- how alike two effects are --------------------------------------------------
@@ -13585,7 +13627,7 @@ Object.assign(UI, {
     const list = el('div', { class: 'srlist' });
     for (const e of Community.list) { const have = Community.installed(e);
       const b = el('button', { class: 'btn sm' + (have ? '' : ' primary') }, have ? 'Added' : 'Add'); b.disabled = have;
-      b.onclick = async () => { try { await Community.install(e); b.textContent = 'Added'; b.disabled = true; b.classList.remove('primary'); toast('“' + e.name + '” is now in your effects, under Community.'); this.refreshPanel && this.refreshPanel(); } catch (err) { toast(err.message || 'That effect could not be added.', 5000); } };
+      b.onclick = async () => { try { await Community.install(e); b.textContent = 'Added'; b.disabled = true; b.classList.remove('primary'); toast('“' + e.name + '” is now in your effects, under Community.'); this.refreshPanel && this.refreshPanel(); } catch (err) { toast((err && err.message) || 'That effect could not be added.', 5000); } };
       list.appendChild(el('div', { class: 'sritem' }, el('div', {}, el('b', {}, e.name || 'Effect'), el('div', { class: 'hint' }, 'by ' + (e.author || 'Unknown'))), el('span', { class: 'grow' }), b)); }
     if (!Community.list.length) list.appendChild(el('p', { class: 'hint' }, Community.error && Community.error !== 'none yet' ? 'The community library could not be loaded here (' + Community.error + ').' : 'No community effects yet. Yours could be the first: save an effect in Effect Lab, open My effects and choose Submit.'));
     this.modal('Community effects', el('div', {}, el('p', { class: 'hint' }, 'Effects made by other TwoFrame users and checked by a person before they were added.'), list),
@@ -13607,7 +13649,7 @@ Object.assign(UI, {
           const rec = j.kind === 'code' ? { id: 'chk', kind: 'code', source: String(j.source || '') } : { id: 'chk', kind: 'stack', name: j.name, stack: j.stack || [] }, saveList = Community.list; Community.list = state.effects; const res = Community.check(rec); Community.list = saveList;
           if (!res.ok) throw new Error(res.problems[0]);
           const e = Community.entryOf(j); if (state.effects.some(x => x.id === e.id)) throw new Error('it is already in the library'); state.effects.push(e); msgs.push('Added “' + e.name + '” by ' + e.author + (res.near && res.near.score >= 0.5 ? ' (closest: ' + res.near.name + ', ' + Math.round(res.near.score * 100) + '%)' : '') + '.');
-        } catch (err) { msgs.push(f.name + ': ' + (err.message || 'could not be read')); } }
+        } catch (err) { msgs.push(f.name + ': ' + ((err && err.message) || 'could not be read')); } }
       note.textContent = msgs.join(' '); draw(); }, true);
     draw();
     this.modal('Library owner tools', el('div', {}, el('p', { class: 'hint' }, 'Only the person who runs the site needs this. Add the submission files you accept, save the library file, then upload it to the site as community.json, next to index.html.'), list, note),
@@ -14012,7 +14054,7 @@ Object.assign(UI, {
         else rec = { id: uid('fx'), kind: 'code', source: Lab.convert(text, Lab.detect(text), name) };
         if (rec.kind === 'code') { const errs = Lab.lint(rec.source).concat(Lab.parse(rec.source).errs); if (errs.length) throw new Error(errs[0]); }
         await Lab.save(rec); done.push(EffectLib.get('lab.' + rec.id).name);
-      } catch (e) { bad.push(`${name}: ${e.message || e}`); }
+      } catch (e) { bad.push(`${name}: ${(e && e.message) || e}`); }
     }
     if (xml.length) await this.importEffects(xml);
     if (done.length || bad.length) this.modal('Import', el('div', {}, done.length ? el('p', {}, `Added ${done.length}: ${done.join(', ')}. Find ${done.length > 1 ? 'them' : 'it'} under Custom.`) : '', bad.length ? el('p', { class: 'warn', style: { whiteSpace: 'pre-wrap' } }, 'Not imported:\n' + bad.join('\n')) : ''), [['OK', () => { this.closeModal(); this.refreshPanel(); this.renderLeft && this.renderLeft(); }]]);
@@ -14213,7 +14255,7 @@ UI.selfTest = async function () {
     ok('Changing a setting adds a keyframe', kx && kx.length === 2 && near(kx[1].t, 3)); ok('Values blend between keyframes', evalProp(App.layer(), 'transform.x', 2) > 540 && evalProp(App.layer(), 'transform.x', 2) < 900, `x at 2 s = ${evalProp(App.layer(), 'transform.x', 2).toFixed(1)}`);
     // snapping
     ok('Rotation settles on 45°', UI.snapAngle(46.5) === 45 && UI.snapAngle(50) === 50); ok('Keyframe times snap to whole frames', near(Math.round(1.0167 * 30) / 30, 1.0333, 1e-3));
-  } catch (e) { ok('The test run itself', false, e.message); }
+  } catch (e) { ok('The test run itself', false, errText(e)); }
   finally { App.project = keep.project; App.undoStack = keep.undo; App.redoStack = keep.redo; App.sel = keep.sel; App.selIds = keep.selIds; App.time = keep.time; App.save = keep.save; Renderer.project = keep.project; UI._lastSnap = ''; if (keep.project) { UI.refresh(); App.requestRender(); } }
   const bad = res.filter(r => !r[1]).length;
   this.modal('Timeline self-test', el('div', { class: 'qs' }, el('p', { class: 'hint' }, bad ? `${bad} of ${res.length} checks failed.` : `All ${res.length} checks passed.`), res.map(([n, pass, d]) => el('div', {}, el('b', { style: { color: pass ? '' : 'var(--danger)' } }, (pass ? '✓ ' : '✗ ') + n), d ? el('p', { class: 'hint' }, d) : ''))), [['Close', () => this.closeModal()]]);
@@ -14269,7 +14311,7 @@ Object.assign(App, {
 (() => {
   const search = UI.searchAll, clipTools = UI.clipTools, openTool = UI.openTool;
   const removeBg = async () => { const l = App.layer() || UI.pickUnder(['video', 'image']); if (!l || (l.type !== 'video' && l.type !== 'image')) { toast('Select a video or photo first.'); return; }
-    try { UI.busy && UI.busy('Loading the background model…'); await FaceAI.segmenter(); UI.busy && UI.busy(null); } catch (e) { UI.busy && UI.busy(null); UI.modal('Remove background', el('p', {}, e.message || String(e)), [['OK', () => UI.closeModal()]]); return; }
+    try { UI.busy && UI.busy('Loading the background model…'); await FaceAI.segmenter(); UI.busy && UI.busy(null); } catch (e) { UI.busy && UI.busy(null); UI.modal('Remove background', el('p', {}, errText(e)), [['OK', () => UI.closeModal()]]); return; }
     App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx'); toast(FaceAI.segKind === 'fast' ? 'Background removed with the small model (the detailed one did not load).' : 'Background removed. Trim the Edge and Edge Softness fine-tune the outline.', 5000); };
   // Extract Audio: the sound of a clip as its own clip on the timeline, or as a file.
   const clipSound = async (l) => { const m = l && Media.items.get(l.mediaId); if (!m) return null; if (!m.audio && m.audioReady) { UI.busy && UI.busy('Reading the sound…'); try { await m.audioReady; } catch (e) { } UI.busy && UI.busy(null); } return m; };
@@ -14366,14 +14408,14 @@ const TFLog = {
     if (store !== 'media' || (r && (r.blob || r.buf))) return r;
     try { let meta = r; if (!meta) meta = JSON.parse(localStorage.getItem('tf.m.' + key) || 'null'); if (!meta) return r;
       const dir = await navigator.storage.getDirectory(), f = await (await dir.getFileHandle('media_' + key)).getFile(); return { ...meta, blob: f.type ? f : new Blob([f], { type: meta.mime || '' }) }; }
-    catch (e) { TFLog.add('media ' + key + ' not found in the file area: ' + e.message); return r && (r.blob || r.buf) ? r : null; }
+    catch (e) { TFLog.add('media ' + key + ' not found in the file area: ' + errText(e)); return r && (r.blob || r.buf) ? r : null; }
   };
   App.open = async function (p) {
     try { const r = await open.call(this, p); TFLog.add(`opened "${p && p.name}" with ${this.project ? this.project.layers.length : '?'} clips, media loaded ${this.project ? this.project.layers.filter(l => l.mediaId && Media.items.has(l.mediaId)).length : 0}/${this.project ? this.project.layers.filter(l => l.mediaId).length : 0}`); return r; }
     catch (e) { const why = (e && (e.stack || e.message)) || String(e); TFLog.add('open failed: ' + why);
       UI.modal('This project did not open', el('div', {}, el('p', {}, 'Something stopped it from loading. Your saved copy has not been changed.'), el('p', { class: 'warn', style: { whiteSpace: 'pre-wrap', fontSize: '12px' } }, String(why).slice(0, 400))), [['Project Doctor', () => { UI.closeModal(); UI.projectDoctor(); }], ['OK', () => UI.closeModal()]]); throw e; }
   };
-  window.addEventListener('error', (e) => TFLog.add('error: ' + (e.message || '') + ' @' + String(e.filename || '').split('/').pop() + ':' + e.lineno));
+  window.addEventListener('error', (e) => TFLog.add('error: ' + ((e && e.message) || '') + ' @' + String(e.filename || '').split('/').pop() + ':' + e.lineno));
   window.addEventListener('unhandledrejection', (e) => TFLog.add('rejected: ' + ((e.reason && (e.reason.message || e.reason.name)) || e.reason)));
   document.addEventListener('visibilitychange', () => { if (App.project) TFLog.add(document.hidden ? 'left the page' : 'came back'); });
   UI.storageScreen = async function () {
@@ -14628,7 +14670,7 @@ function showFatal(title, detail) {
 
 let booted = false;
 window.addEventListener('error', (e) => {
-  if (!booted) showFatal('TwoFrame couldn’t start', (e.error && e.error.message) || e.message || 'Unknown error');
+  if (!booted) showFatal('TwoFrame couldn’t start', (e.error && e.error.message) || (e && e.message) || 'Unknown error');
   else console.warn(e.error || e.message);
 });
 window.addEventListener('unhandledrejection', (e) => {
@@ -14642,7 +14684,7 @@ window.addEventListener('unhandledrejection', (e) => {
   const test = document.createElement('canvas');
   if (!test.getContext('webgl2')) { showFatal('This browser can’t run TwoFrame', 'TwoFrame needs WebGL 2 for its effects. Use a recent Safari, Chrome, Edge or Firefox.'); return; }
   try { await App.init(); booted = true; }
-  catch (e) { console.error(e); showFatal('TwoFrame couldn’t start', e.message || String(e)); }
+  catch (e) { console.error(e); showFatal('TwoFrame couldn’t start', errText(e)); }
 })();
 
 </script>
