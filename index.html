@@ -748,6 +748,9 @@ body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
 .simplebig{display:flex;flex-direction:column;gap:10px;margin:8px 0}
 .simplebig .btn{min-height:44px}
 
+/* remove background status */
+.mattestat{display:flex;flex-direction:column;gap:6px;margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.05)}
+
 </style>
 </head>
 <body class="lay-mobile">
@@ -7538,7 +7541,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '22 Nov F';
+const TF_BUILD = '22 Nov G';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -7621,6 +7624,7 @@ const Exporter = {
     engine.setSize(W, H, p.width, p.height);
     Runtime.clearCaches();
     const N = Math.max(1, Math.round(p.duration * fps));
+    this.rendering = true; try { if (typeof Matte !== 'undefined') Matte.exportOff = false; } catch (e) { }
     let tPic = 0, tEnc = 0; const tAll = performance.now() - 0, tSound = tAll - tStart;
     try {
       for (let i = 0; i < N; i++) {
@@ -7665,6 +7669,7 @@ const Exporter = {
     } finally {
       try { venc.close(); } catch (e) { }
       try { recJob && recJob.cancel(); } catch (e) { }
+      this.rendering = false; try { if (typeof Matte !== 'undefined') for (const id of Matte.mem.keys()) Matte.flush(id); } catch (e) { }
       this.busy = false;
       engine.setSize(prevSize[0], prevSize[1], p.width, p.height);
       Runtime.clearCaches();
@@ -12169,26 +12174,61 @@ void main(){ vec2 uv = acScreenNorm; float asp = xAsp(); vec4 orig = tfGet(uv); 
   vec4 o = xOut(c3, s.a); if (compare > 0.001) { if (uv.x < compare) o = orig; if (abs(uv.x - compare) < 0.0015) o = vec4(1.0); }
   gl_FragColor = o; }`);
 FX_HOOKS['tf.retouch'] = async (layer, fxi, vals, t, R, list) => FaceAI.uniforms(layer, t, list);
+// A matte as a one-channel texture.
+function uploadMatte(tex, bytes, w, h) { const gl = engine.gl; gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, bytes); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); tex._w = w; tex._h = h; }
 FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
-  const m = Media.items.get(layer.mediaId), r = Runtime.get(layer); if (!m || !FaceAI.seg || (layer.type !== 'video' && layer.type !== 'image')) return { uCutOn: 0 };
-  // The model the effect asks for loads in the background; the one that is ready is used meanwhile.
-  if (fxi && fxi.defId === 'tf.cutout') { const want = vals && vals.model === 1 ? 'fast' : 'detail'; if (FaceAI.segKind !== want && FaceAI.segFell !== want && !FaceAI._segLoad) FaceAI.segmenter(want).then(() => App.requestRender()).catch(() => { }); }
-  let fr = null, img = null;
-  if (layer.type === 'video') { fr = r.lastFr && r.lastFr.tex ? r.lastFr : null; if (!fr) { img = r.video; if (!img || img.readyState < 2) return { uCutOn: 0 }; } } else img = m.image;
-  if (!fr && !img) return { uCutOn: 0 };
-  // While playing, a new mask is made only as often as the phone can afford (about a third of its time). Between
-  // those, the last mask is kept and the edge step fits it to each new frame, so the picture stays smooth.
-  // Paused frames and exports always get their own mask.
-  const z = FaceAI._cz && FaceAI._cz.get(layer.id), playing = R && R.curMode === 'play', now = performance.now();
-  const reuse = playing && r.cutTex && r.cutAt && z && z.cost > 9 && now - r.cutAt < Math.min(220, z.cost * 3);
-  if (!reuse) {
-    let cv = null; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, !(vals && vals.zoomIn === false)); } catch (e) { console.warn('person mask failed', e); }
-    // A frame the model could not answer keeps the last mask. (It used to show the whole frame for a moment, which flashed the background in.)
-    if (cv) { if (!r.cutTex) r.cutTex = engine.newTex(); engine.upload(r.cutTex, cv); r.cutAt = now; }
-    else if (!r.cutTex) return { uCutOn: 0 };
+  const m = Media.items.get(layer.mediaId), r = Runtime.get(layer); if (!m || (layer.type !== 'video' && layer.type !== 'image')) return { uCutOn: 0 };
+  const playing = R && R.curMode === 'play', exporting = typeof Exporter !== 'undefined' && Exporter.rendering && !Matte.baking;
+  const f = layer.type === 'video' ? (r.lastSrcF != null ? r.lastSrcF : 0) : 0, i0 = Math.max(0, Math.floor(f + 1e-4)), frac = f - i0;
+  let hq = false; const tween = layer.type === 'video' && layer.video && layer.video.interp && layer.video.interp !== 'none' && !playing && layer.video.freeze == null;
+  // 1. A matte from the analysis: nothing to compute, just look it up.
+  let rec = Matte.mem.get(m.id); if (!rec || !rec.index) { if (playing) Matte.open(m.id); else { await Matte.open(m.id); rec = Matte.mem.get(m.id); } }
+  // A frame skipped by the faster analysis sits between two analysed ones and takes their average.
+  const between = rec && rec.index && !Matte.has(m.id, i0) && i0 > 0 && Matte.has(m.id, i0 - 1) && Matte.has(m.id, i0 + 1);
+  if (between) { const key = m.id + ':b' + i0 + ':' + rec.w; if (r.cutKey === key && r.cutTex) hq = true; else { let a = Matte.get(m.id, i0 - 1); if (!a && !playing) { await Matte.loadChunk(m.id, Math.floor((i0 - 1) / Matte.CH)); a = Matte.get(m.id, i0 - 1); }
+      if (a) { const n = a.length; if (!FaceAI._mixA || FaceAI._mixA.length !== n) FaceAI._mixA = new Uint8Array(n); FaceAI._mixA.set(a); let b = Matte.get(m.id, i0 + 1); if (!b && !playing) { await Matte.loadChunk(m.id, Math.floor((i0 + 1) / Matte.CH)); b = Matte.get(m.id, i0 + 1); }
+        if (b) { const A = FaceAI._mixA; for (let i = 0; i < n; i++) A[i] = (A[i] + b[i]) >> 1; } if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, FaceAI._mixA, rec.w, rec.h); r.cutKey = key; hq = true; if (playing) Matte.warm(m.id, i0 + 8); }
+      else if (playing && r.cutTex && r.cutHQ) hq = true; } }
+  else if (rec && rec.index && Matte.has(m.id, i0)) {
+    // Slow motion shows frames in between two analysed ones: their mattes are cross-faded.
+    const two = tween && frac > 0.06 && frac < 0.94 && Matte.has(m.id, i0 + 1), key = m.id + ':' + i0 + ':' + (two ? Math.round(frac * 8) : 0) + ':' + rec.w;
+    if (r.cutKey === key && r.cutTex) hq = true;
+    else {
+      let a = Matte.get(m.id, i0); if (!a && !playing) { await Matte.loadChunk(m.id, Math.floor(i0 / Matte.CH)); a = Matte.get(m.id, i0); }
+      if (a) { let bytes = a;
+        if (two) { const n = a.length; if (!FaceAI._mixA || FaceAI._mixA.length !== n) FaceAI._mixA = new Uint8Array(n); FaceAI._mixA.set(a); let b = Matte.get(m.id, i0 + 1); if (!b && !playing) { await Matte.loadChunk(m.id, Math.floor((i0 + 1) / Matte.CH)); b = Matte.get(m.id, i0 + 1); }
+          if (b) { const A = FaceAI._mixA, w1 = Math.round(frac * 256), w0 = 256 - w1; for (let i = 0; i < n; i++) A[i] = (A[i] * w0 + b[i] * w1) >> 8; } bytes = FaceAI._mixA; }
+        if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, bytes, rec.w, rec.h); r.cutKey = key; hq = true; if (playing) Matte.warm(m.id, i0 + 8);
+      } else if (playing && r.cutTex && r.cutHQ) hq = true;      // still being read from storage: keep the last one for this frame
+    }
   }
+  // 2. Exporting a frame that was never analysed: analyse it now, so an export is always the best quality.
+  else if (exporting && !Matte.exportOff) {
+    try { await Matte.engine(); const src = layer.type === 'image' ? { img: m.image } : (r.lastFr && r.lastFr.tex ? { rt: r.lastFr } : null);
+      if (src) { const a = await Matte.alpha(src, m.w, m.h, 'export:' + layer.id, { zoom: !(vals && vals.zoomIn === false) }); if (!tween || frac < 0.03 || layer.type === 'image') Matte.put(m.id, i0, a.w, a.h, a.data); if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, a.data, a.w, a.h); r.cutKey = ''; hq = true; } }
+    catch (e) { Matte.exportOff = true; console.warn('best-quality matte not available for this export', e); }
+  }
+  // 3. Otherwise the quick model, live.
+  if (!hq) {
+    if (!FaceAI.seg) { if (!FaceAI._segLoad) FaceAI.segmenter('fast').then(() => App.requestRender()).catch(() => { }); return { uCutOn: 0 }; }
+    if (fxi && fxi.defId === 'tf.cutout') { const want = vals && vals.live === 1 ? 'detail' : 'fast'; if (FaceAI.segKind !== want && FaceAI.segFell !== want && !FaceAI._segLoad) FaceAI.segmenter(want).then(() => App.requestRender()).catch(() => { }); }
+    let fr = null, img = null;
+    if (layer.type === 'video') { fr = r.lastFr && r.lastFr.tex ? r.lastFr : null; if (!fr) { img = r.video; if (!img || img.readyState < 2) return { uCutOn: 0 }; } } else img = m.image;
+    if (!fr && !img) return { uCutOn: 0 };
+    // While playing, a new mask is made only as often as the device can afford; between those the last one is kept.
+    const z = FaceAI._cz && FaceAI._cz.get(layer.id), now = performance.now();
+    const reuse = playing && r.cutTex && r.cutAt && !r.cutHQ && z && z.cost > 9 && now - r.cutAt < Math.min(220, z.cost * 3);
+    if (!reuse) {
+      let cv = null; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, !(vals && vals.zoomIn === false)); } catch (e) { console.warn('person mask failed', e); }
+      if (cv) { if (!r.cutTex || r.cutHQ) { r.cutTex = engine.newTex(); } engine.upload(r.cutTex, cv); r.cutAt = now; }
+      else if (!r.cutTex) return { uCutOn: 0 };
+    }
+    r.cutKey = '';
+  }
+  r.cutHQ = hq;
   const rt = R.R('cut_mask'); engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null);
-  return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 };
+  return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0, uCutHQ: hq ? 1 : 0 };
 };
 
 const RETOUCH_PRESETS = {
@@ -12255,6 +12295,279 @@ Object.assign(UI, {
     body.appendChild(el('p', { class: 'hint' }, 'Every slider here can be keyframed with its diamond. Body reshaping is not built yet.'));
   }
 });
+
+</script>
+<script>
+// ===========================================================================
+// Person mattes: analyse once, then play smoothly
+//
+// Removing a background well needs a matting model, and a matting model is too
+// slow to run on every frame while a video plays. So the clip is analysed once:
+// every frame goes through the model, and the resulting matte (how much of each
+// pixel is the person) is stored. After that, playing, scrubbing and exporting
+// only look the matte up, which costs almost nothing.
+//
+// Model: MODNet (Ke et al., AAAI 2022; Apache License 2.0), a portrait matting
+// network. Unlike the small "selfie" models it gives soft edges for hair and
+// keeps fingers apart. It runs through ONNX Runtime Web (MIT), on the graphics
+// chip with WebGPU where that works and in WebAssembly everywhere else.
+// Both are downloaded the first time and then kept by the browser.
+//
+// Frames that have not been analysed (a clip that was made longer afterwards,
+// or playback before the analysis is done) fall back to the quick model in
+// retouch.js, so there is always a picture.
+// ===========================================================================
+const MATTE_CFG = {
+  ort: MP_CFG.ort || 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/',
+  // Where the model is looked for, in order: next to the app (if you host it yourself), then two public copies.
+  model: MP_CFG.modnet ? [MP_CFG.modnet] : ['models/modnet.onnx', 'https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx',
+    ['https://cdn.jsdelivr.net/npm/@rmbg/model-modnet@0.0.1/modnet-1.onnx', 'https://cdn.jsdelivr.net/npm/@rmbg/model-modnet@0.0.1/modnet-2.onnx', 'https://cdn.jsdelivr.net/npm/@rmbg/model-modnet@0.0.1/modnet-3.onnx']],
+  forceGpu: !!MP_CFG.forceGpu, noGpu: !!MP_CFG.noGpu
+};
+
+const Matte = {
+  VER: 2, CH: 40,                 // stored in groups of 40 frames
+  mem: new Map(),                 // media id -> { w, h, frames: Map(index -> packed bytes), have: Set(chunks read), dirty: Set(chunks to write), index: Set(frame numbers on disk) }
+  state: new Map(),               // look-closer state per key
+  eng: null, baking: false, cancel: false,
+
+  // ---- storage -----------------------------------------------------------------
+  // A matte is mostly pure black and pure white with a thin soft edge, so runs of 0 and 255 are stored as counts.
+  pack(u8) {
+    const out = new Uint8Array(u8.length + (u8.length >> 7) + 16); let o = 0, i = 0; const n = u8.length;
+    while (i < n) {
+      const v = u8[i];
+      if (v === 0 || v === 255) { let j = i + 1; while (j < n && u8[j] === v && j - i < 65535) j++; if (j - i >= 4) { out[o++] = v === 0 ? 0 : 1; out[o++] = (j - i) & 255; out[o++] = (j - i) >> 8; i = j; continue; } }
+      let j = i, run = 0; while (j < n && j - i < 65535) { const w = u8[j]; if ((w === 0 || w === 255) && j + 3 < n && u8[j + 1] === w && u8[j + 2] === w && u8[j + 3] === w) break; j++; }
+      if (j === i) j = i + 1; run = j - i; out[o++] = 2; out[o++] = run & 255; out[o++] = run >> 8; out.set(u8.subarray(i, j), o); o += run; i = j;
+    }
+    return out.slice(0, o);
+  },
+  unpack(p, out) { let o = 0, i = 0; const n = p.length; while (i < n) { const c = p[i], len = p[i + 1] | (p[i + 2] << 8); i += 3; if (c === 2) { out.set(p.subarray(i, i + len), o); i += len; } else out.fill(c ? 255 : 0, o, o + len); o += len; } return out; },
+  rec(id) { let r = this.mem.get(id); if (!r) { r = { w: 0, h: 0, frames: new Map(), have: new Set(), dirty: new Set(), index: null }; this.mem.set(id, r); } return r; },
+  key(id, c) { return 'matte' + this.VER + ':' + id + ':' + c; },
+  // The list of frames that exist on disk for a clip (read once).
+  async open(id) {
+    const r = this.rec(id); if (r.index) return r;
+    r.index = new Set(); try { const h = await Store.get('media', this.key(id, 'index')); if (h && h.w) { r.w = r.w || h.w; r.h = r.h || h.h; for (const i of h.frames || []) r.index.add(i); } } catch (e) { }
+    return r;
+  },
+  loadChunk(id, c) {
+    const r = this.rec(id); if (!r.load) r.load = new Map(); if (r.load.has(c)) return r.load.get(c);
+    const pr = (async () => { try { const d = await Store.get('media', this.key(id, c)); if (d && d.frames) for (const k of Object.keys(d.frames)) if (!r.frames.has(+k)) r.frames.set(+k, d.frames[k]); } catch (e) { } r.have.add(c); this.trim(id, c); })();
+    r.load.set(c, pr); return pr;
+  },
+  // Long clips: only the groups near the one in use stay in memory (everything is on disk).
+  trim(id, near) { const r = this.mem.get(id); if (!r || r.frames.size <= 45 * this.CH) return; const chunks = Array.from(new Set(Array.from(r.frames.keys()).map(i => Math.floor(i / this.CH)))).filter(c => !r.dirty.has(c)).sort((a, b) => Math.abs(b - near) - Math.abs(a - near));
+    if (!r.index) return; for (const c of chunks) { if (r.frames.size <= 30 * this.CH) break; for (let i = c * this.CH; i < (c + 1) * this.CH; i++) r.frames.delete(i); r.have.delete(c); if (r.load) r.load.delete(c); } },
+  async flush(id) {
+    const r = this.mem.get(id); if (!r || !r.dirty.size) return;
+    const chunks = Array.from(r.dirty); r.dirty.clear();
+    for (const c of chunks) { if (r.index && !r.have.has(c)) await this.loadChunk(id, c);   // frames of this group already on disk are kept
+      const frames = {}; for (let i = c * this.CH; i < (c + 1) * this.CH; i++) if (r.frames.has(i)) frames[i] = r.frames.get(i); try { await Store.put('media', this.key(id, c), { id: this.key(id, c), type: 'matte', frames }); } catch (e) { } }
+    try { await Store.put('media', this.key(id, 'index'), { id: this.key(id, 'index'), type: 'matte', w: r.w, h: r.h, frames: Array.from(new Set([...(r.index || []), ...r.frames.keys()])) }); } catch (e) { }    this.trim(id, chunks[chunks.length - 1]);
+  },
+  put(id, idx, w, h, u8) { const r = this.rec(id); if (r.w !== w || r.h !== h) { if (r.w) { r.frames.clear(); if (r.index) r.index.clear(); } r.w = w; r.h = h; } r.frames.set(idx, this.pack(u8)); if (r.index) r.index.add(idx); r.dirty.add(Math.floor(idx / this.CH)); },
+  has(id, idx) { const r = this.mem.get(id); return !!r && (r.frames.has(idx) || (!!r.index && r.index.has(idx))); },
+  // The matte of one frame as bytes, or null when it is not in memory (it is then fetched in the background for the next call).
+  get(id, idx) {
+    const r = this.mem.get(id); if (!r) { this.open(id).then(() => App.requestRender && App.requestRender()); return null; }
+    const p = r.frames.get(idx);
+    if (!p) { if (r.index && r.index.has(idx)) { const c = Math.floor(idx / this.CH); if (!r.have.has(c) && !(r.load && r.load.has(c))) this.loadChunk(id, c).then(() => { try { App.requestRender(); } catch (e) { } }); } return null; }
+    const n = r.w * r.h; if (!this._tmp || this._tmp.length !== n) this._tmp = new Uint8Array(n); return this.unpack(p, this._tmp);
+  },
+  // Frames near the playhead are read ahead of time during playback.
+  warm(id, idx) { const r = this.mem.get(id); if (!r || !r.index) return; for (const c of [Math.floor(idx / this.CH), Math.floor(idx / this.CH) + 1]) if (!r.have.has(c)) this.loadChunk(id, c); },
+  count(id, a, b) { const r = this.mem.get(id); if (!r) return 0; let n = 0; for (let i = a; i <= b; i++) if (r.frames.has(i) || (r.index && r.index.has(i))) n++; return n; },
+  async forget(id) { const r = this.mem.get(id); const all = new Set([...(r ? r.frames.keys() : []), ...((r && r.index) || [])]); const chunks = new Set(Array.from(all).map(i => Math.floor(i / this.CH))); this.mem.delete(id); for (const c of chunks) { try { await Store.del('media', this.key(id, c)); } catch (e) { } } try { await Store.del('media', this.key(id, 'index')); } catch (e) { } },
+
+  // ---- the model ------------------------------------------------------------------
+  async fetchModel(onP) {
+    const KEY = location.origin + '/__twoframe_models/modnet-fp32.onnx'; let cache = null;
+    try { if ('caches' in self) cache = await caches.open('twoframe-models-1'); } catch (e) { cache = null; }
+    if (cache) { try { const hit = await cache.match(KEY); if (hit) { const b = await hit.arrayBuffer(); if (b.byteLength > 5e6) return b; } } catch (e) { } }
+    let lastErr = null;
+    for (const src of MATTE_CFG.model) {
+      try {
+        const parts = Array.isArray(src) ? src : [src], bufs = []; let got = 0;
+        for (let k = 0; k < parts.length; k++) {
+          const r = await fetch(parts[k]); if (!r.ok) throw new Error('HTTP ' + r.status);
+          const total = (+r.headers.get('content-length') || 0) * (parts.length > 1 ? parts.length : 1) || 26e6;
+          if (r.body && r.body.getReader) { const rd = r.body.getReader(), ch = []; let n = 0; for (;;) { const { done, value } = await rd.read(); if (done) break; ch.push(value); n += value.length; got += value.length; onP && onP(Math.min(0.99, got / total)); } const u = new Uint8Array(n); let o = 0; for (const c of ch) { u.set(c, o); o += c.length; } bufs.push(u); }
+          else { const u = new Uint8Array(await r.arrayBuffer()); got += u.length; bufs.push(u); onP && onP(Math.min(0.99, got / total)); }
+        }
+        const n = bufs.reduce((a, b) => a + b.length, 0); if (n < 5e6) throw new Error('not a model file');
+        const all = new Uint8Array(n); let o = 0; for (const b of bufs) { all.set(b, o); o += b.length; }
+        if (cache) { try { await cache.put(KEY, new Response(all.buffer.slice(0), { headers: { 'content-type': 'application/octet-stream' } })); } catch (e) { } }
+        return all.buffer;
+      } catch (e) { lastErr = e; }
+    }
+    throw new Error('The person model could not be downloaded (' + errText(lastErr) + '). Check the connection and try again.');
+  },
+  // Loads the runtime and the model once. onP(text, fraction) reports progress.
+  async engine(onP) {
+    if (this.eng) return this.eng;
+    if (this._engLoad) return this._engLoad;
+    this._engLoad = (async () => {
+      let gpuOK = false;
+      if (!MATTE_CFG.noGpu && navigator.gpu) { try { const ad = await navigator.gpu.requestAdapter(); const soft = ad && (ad.isFallbackAdapter || (ad.info && ad.info.isFallbackAdapter)); gpuOK = !!ad && (!soft || MATTE_CFG.forceGpu); } catch (e) { gpuOK = false; } }
+      let saved = null; try { saved = JSON.parse(localStorage.getItem('tf.matteEp') || 'null'); } catch (e) { }
+      if (saved && saved.ep === 'wasm' && !MATTE_CFG.forceGpu) gpuOK = false;
+      // If the last try on the graphics chip never finished (the page was closed or crashed during it), it is not tried again.
+      try { if (localStorage.getItem('tf.matteTry') === 'pending' && !MATTE_CFG.forceGpu) { gpuOK = false; localStorage.setItem('tf.matteEp', JSON.stringify({ ep: 'wasm', ms: 0, why: 'graphics chip try did not finish' })); } } catch (e) { }
+      onP && onP('Getting the person model (about 50 MB, only the first time)…', 0);
+      const [ort, bytes] = await Promise.all([import(MATTE_CFG.ort + (gpuOK ? 'ort.webgpu.min.mjs' : 'ort.wasm.min.mjs')), this.fetchModel((f) => onP && onP('Getting the person model (about 50 MB, only the first time)…', f))]);
+      ort.env.wasm.wasmPaths = MATTE_CFG.ort; ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1; try { ort.env.logLevel = 'error'; } catch (e) { }
+      onP && onP('Starting the person model…', 1);
+      const make = (ep) => ort.InferenceSession.create(new Uint8Array(bytes), { executionProviders: [ep], graphOptimizationLevel: 'all' });
+      const runOn = async (sess, x, h, w) => { const y = await sess.run({ input: new ort.Tensor('float32', x, [1, 3, h, w]) }); const o = y.output || y[Object.keys(y)[0]]; return o.data; };
+      let sess = null, ep = 'wasm', ms = 0;
+      // A fixed test picture (soft blobs) for comparing the two ways of running the model.
+      const th = 256, tw = 160, test = new Float32Array(3 * th * tw); for (let c = 0; c < 3; c++) for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) test[c * th * tw + y * tw + x] = Math.sin(x * 0.07 + c) * Math.cos(y * 0.05 - c * 0.5) * 0.6 + (Math.hypot(x - 80, y - 120) < 60 ? 0.3 : -0.3);
+      if (gpuOK) {
+        try { localStorage.setItem('tf.matteTry', 'pending'); } catch (e) { }
+        try {
+          const g = await make('webgpu'); await runOn(g, test, th, tw);                         // the first run builds the shaders
+          let t0 = performance.now(); const yg = await runOn(g, test, th, tw); const msG = performance.now() - t0;
+          if (saved && saved.ep === 'webgpu' && !MATTE_CFG.forceGpu) { sess = g; ep = 'webgpu'; ms = msG; }
+          else {
+            // Trust the graphics chip only if it gives the same answer as plain WebAssembly, and faster.
+            const w = await make('wasm'); await runOn(w, test, th, tw); t0 = performance.now(); const yw = await runOn(w, test, th, tw); const msW = performance.now() - t0;
+            let d = 0; for (let i = 0; i < yw.length; i++) d += Math.abs(yw[i] - yg[i]); d /= yw.length;
+            if (d < 0.02 && (msG < msW * 0.85 || MATTE_CFG.forceGpu)) { sess = g; ep = 'webgpu'; ms = msG; try { await w.release(); } catch (e) { } }
+            else { sess = w; ep = 'wasm'; ms = msW; try { await g.release(); } catch (e) { } }
+            this.gpuNote = 'graphics chip ' + Math.round(msG) + ' ms, WebAssembly ' + Math.round(msW) + ' ms, difference ' + d.toFixed(4);
+          }
+        } catch (e) { sess = null; this.gpuNote = 'graphics chip not usable: ' + errText(e); }
+      }
+      try { localStorage.removeItem('tf.matteTry'); } catch (e) { }
+      if (!sess) { sess = await make('wasm'); await runOn(sess, test, th, tw); const t0 = performance.now(); await runOn(sess, test, th, tw); ms = performance.now() - t0; ep = 'wasm'; }
+      try { localStorage.setItem('tf.matteEp', JSON.stringify({ ep, ms: Math.round(ms) })); } catch (e) { }
+      // The test picture is 256 x 160. A working frame at "short side 256" is about three times that.
+      // Below a short side of 224 the model starts to leave holes in people (measured), so it never goes smaller.
+      const short = ms * 2.8 < 450 ? 256 : 224;
+      this.eng = { ep, ms, short, run: (x, h, w) => runOn(sess, x, h, w) };
+      return this.eng;
+    })();
+    try { return await this._engLoad; } catch (e) { this._engLoad = null; throw e; }
+  },
+  ready() { return !!this.eng; },
+
+  // ---- one frame --------------------------------------------------------------------
+  // Size the model is fed for a region of pw x ph pixels: short side `s`, both sides a multiple of 32.
+  dims(pw, ph, s) { const k = s / Math.min(pw, ph); let w = Math.max(96, Math.round(pw * k / 32) * 32), h = Math.max(96, Math.round(ph * k / 32) * 32); const cap = 640; if (Math.max(w, h) > cap) { const q = cap / Math.max(w, h); w = Math.max(96, Math.floor(w * q / 32) * 32); h = Math.max(96, Math.floor(h * q / 32) * 32); } return [w, h]; },
+  // Pixels of a region of the frame at w x h, as the model wants them (three planes, -1..1).
+  grab(src, B, w, h) {
+    let px;
+    if (src.rt) {
+      const E = engine, gl = E.gl, prog = E.program('mattecrop', VS_FULL, FS_HEAD + 'uniform sampler2D uTex; uniform vec4 uUV;\nvoid main(){ vec4 c = texture2D(uTex, mix(uUV.xy, uUV.zw, vUv)); gl_FragColor = vec4(c.rgb / max(c.a, 1e-4), 1.0); }');
+      // Shrunk in steps of at most two, so thin details are averaged instead of skipped.
+      let cur = src.rt, uv = [B[0], B[1], B[2], B[3]], cw = (B[2] - B[0]) * src.rt.w, chh = (B[3] - B[1]) * src.rt.h, step = 0;
+      while (cw > w * 2.2 || chh > h * 2.2) { const nw = Math.max(w, Math.round(cw / 2)), nh = Math.max(h, Math.round(chh / 2)), t = E.rt('matte_s' + (step++ % 2), nw, nh); E.draw(prog, t, { uTex: cur, uUV: uv }); cur = t; uv = [0, 0, 1, 1]; cw = nw; chh = nh; }
+      const rt = E.rt('matte_in', w, h); E.draw(prog, rt, { uTex: cur, uUV: uv });
+      if (!this._px || this._px.length !== w * h * 4) this._px = new Uint8Array(w * h * 4);
+      E.bindTarget(rt); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this._px); px = this._px;
+    } else {
+      const img = src.img, c = this._ic || (this._ic = document.createElement('canvas')); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+      const iw = img.videoWidth || img.naturalWidth || img.width, ih = img.videoHeight || img.naturalHeight || img.height;
+      g.drawImage(img, B[0] * iw, B[1] * ih, (B[2] - B[0]) * iw, (B[3] - B[1]) * ih, 0, 0, w, h); px = g.getImageData(0, 0, w, h).data;
+    }
+    const n = w * h, x = new Float32Array(3 * n); for (let i = 0, o = 0; i < n; i++, o += 4) { x[i] = px[o] / 127.5 - 1; x[n + i] = px[o + 1] / 127.5 - 1; x[2 * n + i] = px[o + 2] / 127.5 - 1; }
+    return x;
+  },
+  // The matte of one frame, in frame space (long side 512), as bytes. `key` keeps the look-closer state of one clip.
+  async alpha(src, mw, mh, key, opts = {}) {
+    const eng = await this.engine(); let z = this.state.get(key); if (!z) { z = { n: 0 }; this.state.set(key, z); }
+    const fk = 512 / Math.max(mw, mh), FW = Math.max(16, Math.round(mw * fk)), FH = Math.max(16, Math.round(mh * fk)), out = new Uint8Array(FW * FH);
+    const pass = async (B) => { const [w, h] = this.dims((B[2] - B[0]) * mw, (B[3] - B[1]) * mh, eng.short), a = await eng.run(this.grab(src, B, w, h), h, w);
+      let x0 = w, y0 = h, x1 = -1, y1 = -1; for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) if (a[i] > 0.3) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      return { a, w, h, B, found: x1 >= 0, box: x1 >= 0 ? [B[0] + x0 / w * (B[2] - B[0]), B[1] + y0 / h * (B[3] - B[1]), B[0] + (x1 + 1) / w * (B[2] - B[0]), B[1] + (y1 + 1) / h * (B[3] - B[1])] : null, edge: x1 >= 0 ? [x0 <= 1, y0 <= 1, x1 >= w - 2, y1 >= h - 2] : null }; };
+    const FULL = [0, 0, 1, 1], zoom = opts.zoom !== false; let B = zoom && z.box ? z.box : FULL, boxed = B !== FULL;
+    let r = await pass(B), wide = null;
+    if (boxed && !r.found) { z.box = null; B = FULL; boxed = false; r = await pass(B); }
+    // Now and then the whole frame is looked at too, so someone walking in from the side is not missed.
+    else if (boxed && (++z.n % 15 === 0)) wide = await pass(FULL);
+    // Into frame space, smoothly.
+    { const bx0 = r.B[0] * FW, by0 = r.B[1] * FH, bw = (r.B[2] - r.B[0]) * FW, bh = (r.B[3] - r.B[1]) * FH, X0 = Math.max(0, Math.floor(bx0)), X1 = Math.min(FW, Math.ceil(bx0 + bw)), Y0 = Math.max(0, Math.floor(by0)), Y1 = Math.min(FH, Math.ceil(by0 + bh)), a = r.a, w = r.w, h = r.h;
+      for (let y = Y0; y < Y1; y++) { let sy = (y + 0.5 - by0) / bh * h - 0.5; sy = sy < 0 ? 0 : sy > h - 1 ? h - 1 : sy; const j0 = sy | 0, j1 = j0 + 1 < h ? j0 + 1 : j0, fy = sy - j0, o = y * FW;
+        for (let x = X0; x < X1; x++) { let sx = (x + 0.5 - bx0) / bw * w - 0.5; sx = sx < 0 ? 0 : sx > w - 1 ? w - 1 : sx; const i0 = sx | 0, i1 = i0 + 1 < w ? i0 + 1 : i0, fx = sx - i0;
+          const v = (a[j0 * w + i0] * (1 - fx) + a[j0 * w + i1] * fx) * (1 - fy) + (a[j1 * w + i0] * (1 - fx) + a[j1 * w + i1] * fx) * fy; out[o + x] = v <= 0 ? 0 : v >= 1 ? 255 : (v * 255 + 0.5) | 0; } } }
+    // Safety net. The matting model sometimes leaves a hole in the middle of a person. The quick model is rough at the
+    // edges but dependable about where a person is, so anything deep inside its mask counts as person.
+    if (opts.guard !== false && typeof FaceAI !== 'undefined' && FaceAI.seg) { try { this.guard(src, out, FW, FH); } catch (e) { } }
+    // Where to look next time.
+    if (!zoom || !r.found) z.box = null;
+    else { let [n0, m0, n1, m1] = r.box; if (wide && wide.found) { n0 = Math.min(n0, wide.box[0]); m0 = Math.min(m0, wide.box[1]); n1 = Math.max(n1, wide.box[2]); m1 = Math.max(m1, wide.box[3]); }
+      const px = 0.2 * (n1 - n0) + 0.03, py = 0.2 * (m1 - m0) + 0.03, e = boxed ? r.edge : [false, false, false, false]; n0 -= px * (e[0] ? 2.5 : 1); m0 -= py * (e[1] ? 2.5 : 1); n1 += px * (e[2] ? 2.5 : 1); m1 += py * (e[3] ? 2.5 : 1);
+      const cw = (n1 - n0) * mw, ch = (m1 - m0) * mh; if (cw < 0.5 * ch) { const d = (0.5 * ch - cw) / mw / 2; n0 -= d; n1 += d; } else if (ch < 0.5 * cw) { const d = (0.5 * cw - ch) / mh / 2; m0 -= d; m1 += d; }
+      n0 = Math.max(0, n0); m0 = Math.max(0, m0); n1 = Math.min(1, n1); m1 = Math.min(1, m1); const q = (v) => Math.round(v * 64) / 64;
+      z.box = (n1 - n0) * (m1 - m0) > 0.6 ? null : [q(n0), q(m0), Math.min(1, q(n1)), Math.min(1, q(m1))]; if (z.box && (z.box[2] - z.box[0] < 0.04 || z.box[3] - z.box[1] < 0.04)) z.box = null; }
+    return { data: out, w: FW, h: FH };
+  },
+
+  guard(src, out, FW, FH) {
+    // the quick model on the whole frame, 256 wide at most
+    const gk = 256 / Math.max(FW, FH), gw = Math.max(16, Math.round(FW * gk)), gh = Math.max(16, Math.round(FH * gk)); let input;
+    if (src.rt) { const E = engine, gl = E.gl, prog = E.program('mattecrop', VS_FULL, FS_HEAD + 'uniform sampler2D uTex; uniform vec4 uUV;\nvoid main(){ vec4 c = texture2D(uTex, mix(uUV.xy, uUV.zw, vUv)); gl_FragColor = vec4(c.rgb / max(c.a, 1e-4), 1.0); }'), rt = E.rt('matte_g', gw, gh); E.draw(prog, rt, { uTex: src.rt, uUV: [0, 0, 1, 1] });
+      if (!this._gpx || this._gpx.length !== gw * gh * 4) this._gpx = new Uint8ClampedArray(gw * gh * 4); E.bindTarget(rt); gl.readPixels(0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, this._gpx); input = new ImageData(this._gpx, gw, gh); }
+    else { const c = this._gc || (this._gc = document.createElement('canvas')); c.width = gw; c.height = gh; c.getContext('2d').drawImage(src.img, 0, 0, gw, gh); input = c; }
+    let S = null, sw = 0, sh = 0; FaceAI.ts += 40;
+    FaceAI.seg.segmentForVideo(input, FaceAI.ts, (res) => { const ms = res.confidenceMasks; if (!ms || !ms.length) return; const multi = ms.length > 2, a = ms[0].getAsFloat32Array(); sw = ms[0].width; sh = ms[0].height; S = new Uint8Array(sw * sh); for (let i = 0; i < S.length; i++) S[i] = (multi ? 1 - a[i] : a[i]) > 0.9 ? 1 : 0; });
+    if (!S) return 0;
+    // "deep inside": every pixel within r of it is person (counted with a summed-area table)
+    const r = Math.max(3, Math.round(0.035 * Math.max(sw, sh))), W1 = sw + 1, sat = new Int32Array(W1 * (sh + 1));
+    for (let y = 0; y < sh; y++) { let row = 0; for (let x = 0; x < sw; x++) { row += S[y * sw + x]; sat[(y + 1) * W1 + x + 1] = sat[y * W1 + x + 1] + row; } }
+    const core = new Uint8Array(sw * sh); for (let y = r; y < sh - r; y++) for (let x = r; x < sw - r; x++) { const c = sat[(y + r + 1) * W1 + x + r + 1] - sat[(y - r) * W1 + x + r + 1] - sat[(y + r + 1) * W1 + x - r] + sat[(y - r) * W1 + x - r]; if (c === (2 * r + 1) * (2 * r + 1)) core[y * sw + x] = 1; }
+    // lift the matte to "person" there, with a soft rim so the patch does not show
+    let fixed = 0; for (let y = 0; y < FH; y++) { const sy = Math.min(sh - 1, (y + 0.5) / FH * sh - 0.5), j0 = Math.max(0, sy | 0), j1 = Math.min(sh - 1, j0 + 1), fy = Math.max(0, sy - j0);
+      for (let x = 0; x < FW; x++) { const o = y * FW + x; if (out[o] > 250) continue; const sx = Math.min(sw - 1, (x + 0.5) / FW * sw - 0.5), i0 = Math.max(0, sx | 0), i1 = Math.min(sw - 1, i0 + 1), fx = Math.max(0, sx - i0);
+        const c = (core[j0 * sw + i0] * (1 - fx) + core[j0 * sw + i1] * fx) * (1 - fy) + (core[j1 * sw + i0] * (1 - fx) + core[j1 * sw + i1] * fx) * fy; if (c > 0) { const v = (c * 255) | 0; if (v > out[o]) { if (out[o] < 128) fixed++; out[o] = v; } } } }
+    return fixed;
+  },
+
+  // ---- a whole clip -----------------------------------------------------------------
+  // Which source frames a clip shows (it may be trimmed, sped up, reversed or on a speed curve).
+  framesOf(l) {
+    if (l.type === 'image') return [0];
+    const p = App.project, vfps = (l.video && l.video.srcFps) || 30, set = new Set(), step = 1 / p.fps, slow = l.video && l.video.interp && l.video.interp !== 'none';
+    for (let t = 0; t < l.dur + step * 0.5; t += step) { const f = srcTimeFor(l, Math.min(t, l.dur)) * vfps, i = Math.floor(f + 1e-4); if (i >= 0) { set.add(i); if (slow || f - i > 0.02) set.add(i + 1); } }
+    // Normal-speed clips also get the frames in between, so trimming a little later needs no new analysis.
+    const arr = Array.from(set).sort((a, b) => a - b); if (arr.length > 1 && !slow) for (let i = arr[0]; i <= arr[arr.length - 1]; i++) set.add(i);
+    return Array.from(set).sort((a, b) => a - b);
+  },
+  // Rough time one frame of this clip will take, from the speed test done when the model started.
+  frameMs(l) { const m = Media.items.get(l.mediaId); if (!m || !this.eng) return 0; const [w, h] = this.dims(m.w, m.h, this.eng.short); return this.eng.ms * (w * h) / 40960 + 25; },
+  async progressOf(l) { const m = Media.items.get(l.mediaId); if (!m) return { done: 0, total: 0 }; await this.open(m.id); const fr = this.framesOf(l); let done = 0; for (const i of fr) if (this.has(m.id, i) || (this.has(m.id, i - 1) && this.has(m.id, i + 1))) done++; return { done, total: fr.length }; },
+  // Analyses every frame the clip shows. onP(text, fraction). Frames already done are kept.
+  async analyse(l, onP, opts = {}) {
+    const m = Media.items.get(l.mediaId); if (!m) throw new Error('Select a video or photo clip.');
+    await this.engine(onP); await this.open(m.id);
+    if (!FaceAI.seg) { try { onP && onP('Getting the quick model too (small)…', 1); await FaceAI.segmenter('fast'); } catch (e) { } }
+    const rec = this.rec(m.id), all = this.framesOf(l); let todo = all.filter(i => opts.redo || !this.has(m.id, i)); if (!todo.length) return { done: 0, ms: 0 };
+    // Faster run: every other frame is analysed; the ones between take the average of their neighbours when shown.
+    if (opts.every === 2 && all.length > 4) todo = todo.filter(i => (i - all[0]) % 2 === 0 || i === all[all.length - 1]);
+    if (opts.redo) { rec.frames.clear(); if (rec.index) rec.index.clear(); }
+    this.cancel = false; this.baking = true; const key = 'bake:' + l.id; this.state.delete(key);
+    const prevBusy = Exporter.busy; try { Player.pause(); } catch (e) { } await Renderer._lock; Exporter.busy = true;
+    const t0 = performance.now(); let done = 0, last = null, prev = null, prevIdx = -9, lastIdx = -9;
+    try {
+      for (const idx of todo) {
+        if (this.cancel) break;
+        let src; if (l.type === 'image') src = { img: m.image }; else { const rt = await Renderer.videoFrameIdx(l, idx, 'exact', false); if (!rt) continue; src = { rt }; }
+        const a = await this.alpha(src, m.w, m.h, key, opts);
+        // A single frame that disagrees with both of its neighbours, where the neighbours agree with each other, is flicker.
+        // That frame takes the neighbours' value there (the "one frame delay" trick from the MODNet paper).
+        if (prev && last && idx === lastIdx + 1 && lastIdx === prevIdx + 1 && last.length === a.data.length) { const p0 = prev, p1 = last, p2 = a.data; let ch = 0; for (let i = 0; i < p1.length; i++) { const d02 = p0[i] - p2[i]; if (d02 < 26 && d02 > -26) { const mid = (p0[i] + p2[i]) >> 1, d = p1[i] - mid; if (d > 26 || d < -26) { p1[i] = mid; ch++; } } } if (ch) this.put(m.id, lastIdx, a.w, a.h, p1); }
+        this.put(m.id, idx, a.w, a.h, a.data); prev = last; prevIdx = lastIdx; last = a.data; lastIdx = idx; done++;
+        const el = (performance.now() - t0) / 1000, left = el / done * (todo.length - done);
+        onP && onP(`Finding the person: frame ${done} of ${todo.length}` + (done > 3 ? ` · about ${left < 90 ? Math.ceil(left) + ' s' : Math.ceil(left / 60) + ' min'} left` : ''), done / todo.length);
+        if (done % this.CH === 0) await this.flush(m.id);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    } finally { Exporter.busy = prevBusy; this.baking = false; await this.flush(m.id); try { Runtime.get(l).cutKey = ''; App.requestRender(); } catch (e) { } }
+    return { done, total: todo.length, ms: performance.now() - t0, stopped: this.cancel, perFrame: done ? (performance.now() - t0) / done : 0, ep: this.eng.ep, short: this.eng.short };
+  }
+};
 
 </script>
   <script>
@@ -14042,6 +14355,8 @@ Object.assign(UI, {
   acknowledgements() {
     const items = [
       ['mp4-muxer', 'MIT licence. Copyright Vanilagy. Writes the exported MP4 files.'],
+      ['MODNet portrait matting model', 'Apache License 2.0. Zhanghan Ke and co-authors (AAAI 2022). Used by Remove Background; downloaded the first time the tool is used.'],
+      ['ONNX Runtime Web', 'MIT License. Copyright Microsoft Corporation. Runs the matting model on this device.'],
       ['VisualOn AAC encoder (vo-aacenc)', 'Apache License 2.0. Copyright 2003-2010 VisualOn. Built into TwoFrame to write AAC sound in exported videos and M4A files.'],
       ['MediaPipe Tasks Vision, Face Landmarker, Selfie Segmenter and Selfie Multiclass models', 'Apache License 2.0. Copyright Google LLC. Used by Retouch, Remove Background and the person tools; downloaded the first time one is opened.'],
       ['Transformers.js', 'Apache License 2.0. Copyright Hugging Face. Runs the caption model on the device.'],
@@ -14325,9 +14640,40 @@ Object.assign(App, {
 });
 (() => {
   const search = UI.searchAll, clipTools = UI.clipTools, openTool = UI.openTool;
+  // Remove Background. The clip is analysed once with the matting model; after that it plays smoothly.
+  const analysePerson = async (l, opts = {}) => {
+    const bar = el('div', { class: 'bar' }, el('i')), label = el('p', { class: 'hint' }, 'Starting…'), note = el('p', { class: 'hint' }, 'This runs once per clip, on your device. Afterwards the clip plays and exports without waiting. You can stop at any time; frames already done are kept.');
+    UI.modal('Removing the background', el('div', {}, bar, label, note), [['Stop', () => { Matte.cancel = true; label.textContent = 'Stopping…'; }]]);
+    const show = (text, f) => { label.textContent = text; bar.firstChild.style.width = Math.round(Math.max(0, Math.min(1, f || 0)) * 100) + '%'; };
+    try {
+      // On a slow device a long clip can take minutes. Say so first and offer the faster run.
+      if (!opts.every) { await Matte.engine(show); const pr = await Matte.progressOf(l), left = (opts.redo ? pr.total : pr.total - pr.done), est = left * Matte.frameMs(l) / 1000;
+        if (est > 100 && left > 60) { const mins = (s) => s < 90 ? Math.round(s / 5) * 5 + ' seconds' : 'about ' + Math.max(2, Math.round(s / 60)) + ' minutes';
+          const pick = await new Promise(res => UI.modal('Removing the background', el('div', {}, el('p', {}, `This clip has ${left} frames to analyse. On this device that takes ${mins(est)}.`), el('p', { class: 'hint' }, 'The faster run analyses every other frame and fills in the ones between. It takes half the time; edges can be a little softer on fast movement. A shorter clip is quicker too: trim it first if you only need part of it.')),
+            [['Cancel', () => res(0)], ['Faster (' + mins(est / 2) + ')', () => res(2)], ['Best (' + mins(est) + ')', () => res(1), 'primary']]));
+          if (!pick) { UI.closeModal(); UI.refresh(); return; } if (pick === 2) opts = { ...opts, every: 2 };
+          UI.modal('Removing the background', el('div', {}, bar, label, note), [['Stop', () => { Matte.cancel = true; label.textContent = 'Stopping…'; }]]); } }
+      const res = await Matte.analyse(l, show, opts); UI.closeModal();
+      if (res.done) toast(res.stopped ? `Stopped. ${res.done} frames are done; the rest use the quick model until you analyse them.` : `Background removed from ${res.done} frame${res.done === 1 ? '' : 's'}.`, 5000);
+      UI._matteInfo = res.done ? `Last analysis: ${Math.round(res.perFrame)} ms per frame, ${res.ep === 'webgpu' ? 'on the graphics chip' : 'in WebAssembly'}, model size ${res.short}.` : UI._matteInfo;
+    } catch (e) {
+      UI.closeModal(); try { FaceAI.segmenter('fast').then(() => App.requestRender()).catch(() => { }); } catch (e2) { }
+      UI.modal('Remove background', el('div', {}, el('p', {}, 'The best-quality model could not be used here: ' + errText(e)), el('p', { class: 'hint' }, 'The quick model is used instead. Its edges are rougher and playback is slower. Try again when you are online.')), [['OK', () => UI.closeModal()]]);
+    }
+    UI.refresh(); App.requestRender();
+  };
+  UI.analysePerson = analysePerson;
   const removeBg = async () => { const l = App.layer() || UI.pickUnder(['video', 'image']); if (!l || (l.type !== 'video' && l.type !== 'image')) { toast('Select a video or photo first.'); return; }
-    try { UI.busy && UI.busy('Loading the background model…'); await FaceAI.segmenter(); UI.busy && UI.busy(null); } catch (e) { UI.busy && UI.busy(null); UI.modal('Remove background', el('p', {}, errText(e)), [['OK', () => UI.closeModal()]]); return; }
-    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx'); toast(FaceAI.segKind === 'fast' ? 'Background removed with the small model (the detailed one did not load).' : 'Background removed. Trim the Edge and Edge Softness fine-tune the outline.', 5000); };
+    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx');
+    const pr = await Matte.progressOf(l); if (pr.done < pr.total) await analysePerson(l); };
+  // The Remove Background card says how much of the clip is analysed and offers to do the rest.
+  { const pfx = UI.panel_fx; UI.panel_fx = function (body, l) { const r = pfx.apply(this, arguments);
+      try { const at = l.effects.findIndex(f => f.defId === 'tf.cutout'), cards = body.querySelectorAll('.fxcard'); if (at >= 0 && cards[at]) { const row = el('div', { class: 'mattestat' }, el('span', { class: 'hint' }, 'Checking…')); const card = cards[at]; card.insertBefore(row, card.children[1] || null);
+          Matte.progressOf(l).then(pr => { row.innerHTML = ''; const all = pr.total && pr.done >= pr.total;
+            row.append(el('span', { class: 'hint' }, !pr.total ? '' : all ? `Analysed: all ${pr.total} frame${pr.total === 1 ? '' : 's'}. Plays smoothly at the best quality.` : pr.done ? `Analysed: ${pr.done} of ${pr.total} frames. The rest use the quick model.` : 'Not analysed yet. The quick model is used, which is rougher and slower.'),
+              el('div', { class: 'btnrow' }, all ? null : el('button', { class: 'btn sm primary', onclick: () => analysePerson(l) }, pr.done ? 'Analyse the rest' : 'Analyse this clip'), pr.done ? el('button', { class: 'btn sm', onclick: () => analysePerson(l, { redo: true }) }, 'Analyse again') : null),
+              UI._matteInfo ? el('span', { class: 'hint' }, UI._matteInfo) : null); }).catch(() => { row.remove(); }); } } catch (e) { }
+      return r; }; }
   // Extract Audio: the sound of a clip as its own clip on the timeline, or as a file.
   const clipSound = async (l) => { const m = l && Media.items.get(l.mediaId); if (!m) return null; if (!m.audio && m.audioReady) { UI.busy && UI.busy('Reading the sound…'); try { await m.audioReady; } catch (e) { } UI.busy && UI.busy(null); } return m; };
   const wavOf = (buf, from, to) => { const a = Math.max(0, Math.floor(from * buf.sampleRate)), b = Math.min(buf.length, Math.ceil(to * buf.sampleRate)), n = Math.max(0, b - a), ch = Math.min(2, buf.numberOfChannels), out = new DataView(new ArrayBuffer(44 + n * ch * 2)), ws = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
@@ -14420,7 +14766,8 @@ const TFLog = {
   const get = Store.get;
   Store.get = async function (store, key) {
     let r = null; try { r = await get.call(this, store, key); } catch (e) { }
-    if (store !== 'media' || (r && (r.blob || r.buf))) return r;
+    // Only real media files live in the file area. Other records kept in this store (face data, person mattes) are returned as they are.
+    if (store !== 'media' || (r && (r.blob || r.buf)) || (r && !r.opfs) || (!r && /^(faces:|matte\d*:)/.test(String(key)))) return r;
     try { let meta = r; if (!meta) meta = JSON.parse(localStorage.getItem('tf.m.' + key) || 'null'); if (!meta) return r;
       const dir = await navigator.storage.getDirectory(), f = await (await dir.getFileHandle('media_' + key)).getFile(); return { ...meta, blob: f.type ? f : new Blob([f], { type: meta.mime || '' }) }; }
     catch (e) { TFLog.add('media ' + key + ' not found in the file area: ' + errText(e)); return r && (r.blob || r.buf) ? r : null; }
@@ -14601,47 +14948,62 @@ if (typeof LOOKS !== 'undefined') LOOKS.push(
 // the real outline, and hair keeps a soft, partly see-through edge.
 // ---------------------------------------------------------------------------
 {
-  const CUT_LOW = (u, w, h) => { const k = Math.min(1, 480 / Math.max(w, h)); return [w * k, h * k]; };
-  fxm('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Loads a model the first time.', [
-    S('shrink', 'Trim the Edge', 0.1, 0, 1), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('despill', 'Clean Edge Colour', 0.6, 0, 1), B('invert', 'Keep the Background Instead', false),
-    L('model', 'Model', 0, ['Detailed (hair and clothes)', 'Fast']), B('zoomIn', 'Look Closer at the Person', true),
-    S('refine', 'Follow the Outline', 0.75, 0, 1), S('smoothE', 'Outline Search Width', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), B('showmask', 'Show the Mask', false)
+  const CUT_LOW = (u, w, h) => { const k = Math.min(1, 720 / Math.max(w, h)); return [w * k, h * k]; };
+  const CUT_TINY = (u, w, h) => { const k = Math.min(1, 160 / Math.max(w, h)); return [w * k, h * k]; };
+  fxm('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Analyse the clip once for the best result and smooth playback.', [
+    S('shrink', 'Trim the Edge', 0.1, 0, 1), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('despill', 'Clean Edge Colour', 0.8, 0, 1), B('invert', 'Keep the Background Instead', false),
+    L('live', 'Quick Model (frames not analysed yet)', 0, ['Fast', 'Detailed (slower)']), B('zoomIn', 'Look Closer at the Person', true),
+    S('refine', 'Follow the Outline (quick model)', 0.75, 0, 1), S('smoothE', 'Outline Search Width (quick model)', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), B('showmask', 'Show the Mask', false)
   ], [
     { scale: 0.5, body: `void main(){ gl_FragColor = tfGet(vUv); }` },
-    { size: CUT_LOW, save: 'a', body: `uniform sampler2D uCut; uniform float uCutOn;
-void main(){ vec4 s = tfGet(vUv); vec4 mk = texture2D(uCut, vUv); gl_FragColor = vec4(tfUn(s), mk.r * mk.a * step(0.5, uCutOn)); }` },
+    // The picture and the rough mask, small. The quick model's mask gets more contrast first (measured: its soft zone is wider than the true edge).
+    { size: CUT_LOW, save: 'a', body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutHQ;
+void main(){ vec4 s = tfGet(vUv); vec4 mk = texture2D(uCut, vUv); float m = mk.r * mk.a * step(0.5, uCutOn); if (uCutHQ < 0.5) m = smoothstep(0.2, 0.8, m); gl_FragColor = vec4(tfUn(s), m); }` },
+    // Quick model only: fit the mask to the picture's colours (guided filter), 5 x 5 window.
     { size: CUT_LOW, float: true, body: `
-void main(){ vec2 px = (0.7 + 1.1 * smoothE) / acScreenSize; vec3 mI = vec3(0.0); float mp = 0.0; vec3 mIp = vec3(0.0); vec3 d1 = vec3(0.0); vec3 d2 = vec3(0.0);
-  for (int y = -4; y <= 4; y++) { for (int x = -4; x <= 4; x++) { vec4 s = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); vec3 I = s.rgb; mI += I; mp += s.a; mIp += I * s.a; d1 += I * I; d2 += vec3(I.r * I.g, I.r * I.b, I.g * I.b); } }
-  mI /= 81.0; mp /= 81.0; mIp /= 81.0; d1 /= 81.0; d2 /= 81.0;
-  float eps = mix(0.012, 0.0006, refine); vec3 cv = mIp - mI * mp;
+void main(){ vec2 px = (0.7 + 0.9 * smoothE) / acScreenSize; vec3 mI = vec3(0.0); float mp = 0.0; vec3 mIp = vec3(0.0); vec3 d1 = vec3(0.0); vec3 d2 = vec3(0.0);
+  for (int y = -2; y <= 2; y++) { for (int x = -2; x <= 2; x++) { vec4 s = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); vec3 I = s.rgb; mI += I; mp += s.a; mIp += I * s.a; d1 += I * I; d2 += vec3(I.r * I.g, I.r * I.b, I.g * I.b); } }
+  mI /= 25.0; mp /= 25.0; mIp /= 25.0; d1 /= 25.0; d2 /= 25.0;
+  float eps = mix(0.004, 0.0001, refine); vec3 cv = mIp - mI * mp;
   float rr = d1.r - mI.r * mI.r + eps; float gg = d1.g - mI.g * mI.g + eps; float bb = d1.b - mI.b * mI.b + eps; float rg = d2.x - mI.r * mI.g; float rb = d2.y - mI.r * mI.b; float gb = d2.z - mI.g * mI.b;
   vec3 c0 = vec3(gg * bb - gb * gb, rb * gb - rg * bb, rg * gb - rb * gg); float det = rr * c0.x + rg * c0.y + rb * c0.z;
   vec3 c1 = vec3(c0.y, rr * bb - rb * rb, rg * rb - rr * gb); vec3 c2 = vec3(c0.z, c1.z, rr * gg - rg * rg);
-  vec3 a = vec3(dot(c0, cv), dot(c1, cv), dot(c2, cv)) / max(det, 1e-12);
+  vec3 a = vec3(dot(c0, cv), dot(c1, cv), dot(c2, cv)) / max(det, 1e-14);
   gl_FragColor = vec4(a, mp - dot(a, mI)); }` },
     { size: CUT_LOW, float: true, save: 'b', body: `
-void main(){ vec2 px = (0.7 + 1.1 * smoothE) * 2.0 / acScreenSize; vec4 s = vec4(0.0);
+void main(){ vec2 px = (0.7 + 0.9 * smoothE) / acScreenSize; vec4 s = vec4(0.0);
   for (int y = -2; y <= 2; y++) { for (int x = -2; x <= 2; x++) { s += texture2D(inputImg.texture, vUv + vec2(float(x), float(y)) * px); } }
   gl_FragColor = s / 25.0; }` },
-    { body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutFloat;
-float lowM(vec2 uv){ return texture2D(bufA.texture, uv).a; }
+    // For cleaning edge colours: the average person colour and the average of everything, over a wide neighbourhood.
+    { size: CUT_TINY, save: 'c', body: `
+void main(){ vec2 px = 1.0 / acScreenSize; vec4 s = vec4(0.0);
+  for (int y = -3; y <= 3; y++) { for (int x = -3; x <= 3; x++) { vec4 t = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); s += vec4(t.rgb * t.a, t.a); } }
+  gl_FragColor = s / 49.0; }` },
+    { size: CUT_TINY, body: `
+void main(){ vec2 px = 1.0 / acScreenSize; vec3 s = vec3(0.0);
+  for (int y = -3; y <= 3; y++) { for (int x = -3; x <= 3; x++) { s += texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px).rgb; } }
+  gl_FragColor = vec4(s / 49.0, 1.0); }` },
+    { body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutFloat; uniform float uCutHQ;
 void main(){ vec4 s = oGet(vUv); if (uCutOn < 0.5) { gl_FragColor = s; return; } vec3 c = tfUn(s);
-  float raw = lowM(vUv); float q = raw;
-  if (uCutFloat > 0.5) { vec4 ab = texture2D(bufB.texture, vUv); q = clamp(dot(ab.rgb, c) + ab.a, 0.0, 1.0);
-    // Far from any edge the model's answer is kept as it is, so nothing inside the person turns see-through.
-    q = mix(q, raw, smoothstep(0.94, 1.0, raw) * 0.85); q = mix(q, raw, (1.0 - smoothstep(0.0, 0.04, raw)) * 0.85); }
-  float e = edge + shrink * 0.3; float a = smoothstep(e - soft, e + soft, q);
-  // Edge pixels still carry background colour. Take the colour from a little further inside the person.
-  if (despill > 0.001 && a > 0.01 && a < 0.985) { vec2 px = 5.0 / (acScreenSize * min(1.0, 480.0 / max(acScreenSize.x, acScreenSize.y)));
-    vec2 g = vec2(lowM(vUv + vec2(px.x, 0.0)) - lowM(vUv - vec2(px.x, 0.0)), lowM(vUv + vec2(0.0, px.y)) - lowM(vUv - vec2(0.0, px.y)));
-    if (dot(g, g) > 1e-6) { vec2 dir = normalize(g) * px; vec3 inner = tfUn(oGet(vUv + dir * 0.9)) * 0.5 + tfUn(oGet(vUv + dir * 1.8)) * 0.5; c = mix(c, inner, despill * (1.0 - a) * 0.85); } }
+  float q;
+  if (uCutHQ > 0.5) { vec4 mk = texture2D(uCut, vUv); q = mk.r * mk.a; }                      // an analysed matte is used as it is
+  else { float raw = texture2D(bufA.texture, vUv).a; q = raw;
+    if (uCutFloat > 0.5) { vec4 ab = texture2D(bufB.texture, vUv); q = clamp(dot(ab.rgb, c) + ab.a, 0.0, 1.0);
+      q = mix(q, raw, smoothstep(0.94, 1.0, raw) * 0.85); q = mix(q, raw, (1.0 - smoothstep(0.0, 0.04, raw)) * 0.85); } }
+  // Edge Softness at its default leaves the matte alone; lower makes the edge harder, higher softer. Trim moves it inward.
+  float gain = max(0.35, 1.0 + (0.3 - soft) * 4.0); float a = clamp((q - 0.5 - (edge - 0.5) - (shrink - 0.1) * 0.3) * gain + 0.5, 0.0, 1.0);
+  // Edge pixels are a blend of person and background. The person's own colour is worked out from the two neighbourhood
+  // averages (Forte and Pitie's fast foreground estimate), so no background colour is left on hair and shoulders.
+  if (despill > 0.001 && a > 0.004 && a < 0.996) { vec4 fs = texture2D(bufC.texture, vUv); vec3 mI = texture2D(inputImg.texture, vUv).rgb;
+    vec3 bF = fs.rgb / (fs.a + 1e-4); vec3 bB = (mI - fs.rgb) / (1.0 - fs.a + 1e-4); float al = clamp(q, 0.0, 1.0);
+    vec3 F = clamp(bF + al * (c - al * bF - (1.0 - al) * bB), 0.0, 1.0); float known = smoothstep(0.02, 0.12, fs.a) * smoothstep(0.02, 0.12, 1.0 - fs.a);
+    c = mix(c, F, despill * known); }
   if (invert) { a = 1.0 - a; c = tfUn(s); }
   float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }` }
   ]);
   const d = EffectLib.get('tf.cutout'); if (d) { d.pro = false; d.main = 4; d.tags = 'keying,background,remove,person,cutout'; }
   // The frame a video layer was last drawn with, for effects that must look at the very same picture.
-  const vf = Renderer.videoFrame; Renderer.videoFrame = async function (layer) { const fr = await vf.apply(this, arguments); try { Runtime.get(layer).lastFr = fr; } catch (e) { } return fr; };
+  const vf = Renderer.videoFrame; Renderer.videoFrame = async function (layer, srcT) { const fr = await vf.apply(this, arguments); try { const r = Runtime.get(layer); r.lastFr = fr; r.lastSrcF = srcT * ((layer.video && layer.video.srcFps) || 30); } catch (e) { } return fr; };
 }
 
 </script>
