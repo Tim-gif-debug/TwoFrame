@@ -6629,7 +6629,7 @@ const Renderer = {
     finally { this._locked = false; release(); }
   },
   async _frame(project, T, mode) {
-    this.project = project; this.depth = 0;
+    this.project = project; this.depth = 0; this.curMode = mode;
     const cur = await this.composite(project.layers, T, mode, true);
     engine.present(cur);
     return cur;
@@ -7538,7 +7538,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '22 Nov E';
+const TF_BUILD = '22 Nov F';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -9514,6 +9514,10 @@ Object.assign(UI, {
     sc.addEventListener('scroll', () => {
       if (Layout.mode !== 'mobile') return;
       // Scrolling the app did itself (following playback, zooming) is not a scrub.
+      // A tap (finger down, no sideways move) is not a scrub either. Tapping a clip redraws the timeline, which can nudge
+      // the scroll position; without this the playhead jumped every time something was tapped.
+      if (this._touching && !this._dragged) { const target = App.time * this.pps; if (Math.abs(sc.scrollLeft - target) > 0.5) { this._progTarget = target; this._progAt = performance.now(); sc.scrollLeft = target; } return; }
+      if (!this._touching && performance.now() - (this._tapAt || 0) < 600) { const target = App.time * this.pps; if (Math.abs(sc.scrollLeft - target) > 0.5) { this._progTarget = target; this._progAt = performance.now(); sc.scrollLeft = target; } return; }
       if (!this._touching && performance.now() - (this._progAt || 0) < 300) return;
       if (this._progTarget != null && Math.abs(sc.scrollLeft - this._progTarget) < 1.5) return;
       this._progTarget = null;
@@ -9524,8 +9528,9 @@ Object.assign(UI, {
     let pinch = null;
     sc.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: Math.abs(e.touches[0].clientX - e.touches[1].clientX) || 1, pps: this.pps }; }, { passive: true });
     sc.addEventListener('touchmove', (e) => { if (!pinch || e.touches.length !== 2) return; e.preventDefault(); const z = pinch.pps * (Math.abs(e.touches[0].clientX - e.touches[1].clientX) || 1) / pinch.d; this._progAt = performance.now(); if (!this._zraf) this._zraf = requestAnimationFrame(() => { this._zraf = 0; this.setZoom(this._zwant); }); this._zwant = z; }, { passive: false });
-    sc.addEventListener('touchend', (e) => { pinch = null; if (!e.touches.length) this._touching = false; });
-    sc.addEventListener('touchstart', () => { this._touching = true; }, { passive: true });
+    sc.addEventListener('touchend', (e) => { pinch = null; if (!e.touches.length) { this._touching = false; if (!this._dragged) { this._progAt = performance.now(); this._tapAt = performance.now(); } } });
+    sc.addEventListener('touchstart', (e) => { this._touching = true; this._dragged = e.touches.length > 1; this._tx0 = e.touches[0].clientX; this._ty0 = e.touches[0].clientY; }, { passive: true });
+    sc.addEventListener('touchmove', (e) => { if (!this._dragged && e.touches[0] && (Math.abs(e.touches[0].clientX - this._tx0) > 10 || Math.abs(e.touches[0].clientY - this._ty0) > 10)) this._dragged = true; }, { passive: true });
     sc.addEventListener('touchcancel', () => { this._touching = false; });
     sc.addEventListener('wheel', (e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); this.setZoom(this.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15)); } }, { passive: false });
     // Ruler: click or drag to scrub (both layouts).
@@ -12068,7 +12073,7 @@ const FaceAI = {
     if (!this._cz) this._cz = new Map();
     let z = this._cz.get(key); if (!z) { z = {}; this._cz.set(key, z); }
     const now = performance.now(), B = (zoom && !retry && z.box && now - z.at < 1500) ? z.box : [0, 0, 1, 1], boxed = B[2] - B[0] < 0.999 || B[3] - B[1] < 0.999;
-    const pw = (B[2] - B[0]) * mw, ph = (B[3] - B[1]) * mh, k = 320 / Math.max(pw, ph), w = Math.max(16, Math.round(pw * k)), h = Math.max(16, Math.round(ph * k));
+    const pw = (B[2] - B[0]) * mw, ph = (B[3] - B[1]) * mh, k = 256 / Math.max(pw, ph), w = Math.max(16, Math.round(pw * k)), h = Math.max(16, Math.round(ph * k));
     let input = null;
     if (fr && fr.tex) {
       const E = engine, gl = E.gl, prog = E.program('cutcrop', VS_FULL, FS_HEAD + 'uniform sampler2D uTex; uniform vec4 uUV;\nvoid main(){ vec4 c = texture2D(uTex, mix(uUV.xy, uUV.zw, vUv)); gl_FragColor = vec4(c.rgb / max(c.a, 1e-4), 1.0); }');
@@ -12079,7 +12084,7 @@ const FaceAI = {
       const c = this._ic || (this._ic = document.createElement('canvas')); c.width = w; c.height = h; const iw = img.videoWidth || img.naturalWidth || img.width, ih = img.videoHeight || img.naturalHeight || img.height;
       c.getContext('2d').drawImage(img, B[0] * iw, B[1] * ih, (B[2] - B[0]) * iw, (B[3] - B[1]) * ih, 0, 0, w, h); input = c;
     } else return null;
-    let out = null, again = false; this.ts += 40;
+    let out = null, again = false; this.ts += 40; const tm0 = performance.now();
     this.seg.segmentForVideo(input, this.ts, (res) => {
       const ms = res.confidenceMasks; if (!ms || !ms.length) return;
       const multi = ms.length > 2, mk = ms[0], W = mk.width, H = mk.height, a = mk.getAsFloat32Array();
@@ -12109,6 +12114,8 @@ const FaceAI = {
       const q = (v) => Math.round(v * 64) / 64, nb = [q(n0), q(m0), Math.min(1, q(n1)), Math.min(1, q(m1))];
       z.box = nb[2] - nb[0] > 0.03 && nb[3] - nb[1] > 0.03 ? nb : null;
     });
+    // How long one mask takes on this device (a running average). Playback uses it to decide how often a new mask is affordable.
+    { const ms = performance.now() - tm0; z.cost = z.cost ? z.cost * 0.7 + ms * 0.3 : ms; }
     if (again) { z.box = null; return this.maskFor(key, fr, img, mw, mh, zoom, true); }
     return out;
   },
@@ -12169,9 +12176,17 @@ FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
   let fr = null, img = null;
   if (layer.type === 'video') { fr = r.lastFr && r.lastFr.tex ? r.lastFr : null; if (!fr) { img = r.video; if (!img || img.readyState < 2) return { uCutOn: 0 }; } } else img = m.image;
   if (!fr && !img) return { uCutOn: 0 };
-  let cv = null; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, !(vals && vals.zoomIn === false)); } catch (e) { console.warn('person mask failed', e); }
-  if (!cv) return { uCutOn: 0 };
-  if (!r.cutTex) r.cutTex = engine.newTex(); engine.upload(r.cutTex, cv);
+  // While playing, a new mask is made only as often as the phone can afford (about a third of its time). Between
+  // those, the last mask is kept and the edge step fits it to each new frame, so the picture stays smooth.
+  // Paused frames and exports always get their own mask.
+  const z = FaceAI._cz && FaceAI._cz.get(layer.id), playing = R && R.curMode === 'play', now = performance.now();
+  const reuse = playing && r.cutTex && r.cutAt && z && z.cost > 9 && now - r.cutAt < Math.min(220, z.cost * 3);
+  if (!reuse) {
+    let cv = null; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, !(vals && vals.zoomIn === false)); } catch (e) { console.warn('person mask failed', e); }
+    // A frame the model could not answer keeps the last mask. (It used to show the whole frame for a moment, which flashed the background in.)
+    if (cv) { if (!r.cutTex) r.cutTex = engine.newTex(); engine.upload(r.cutTex, cv); r.cutAt = now; }
+    else if (!r.cutTex) return { uCutOn: 0 };
+  }
   const rt = R.R('cut_mask'); engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null);
   return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 };
 };
