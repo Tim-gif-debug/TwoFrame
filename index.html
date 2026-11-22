@@ -4825,7 +4825,7 @@ class Engine {
   passSteps(def) {
     if (def._steps) return def._steps;
     def._steps = [];
-    def.passes.forEach((ps, i) => { const sub = { id: def.id + '#' + i, name: def.name, precision: def.precision, params: def.params, shader: 'uniform float acPass;\n' + (def.prelude || '') + ps.body }; for (let k = 0; k < (ps.repeat || 1); k++) def._steps.push({ def: sub, scale: ps.scale || 1, size: ps.size, save: ps.save, iter: k }); });
+    def.passes.forEach((ps, i) => { const sub = { id: def.id + '#' + i, name: def.name, precision: def.precision, params: def.params, shader: 'uniform float acPass;\n' + (def.prelude || '') + ps.body }; for (let k = 0; k < (ps.repeat || 1); k++) def._steps.push({ def: sub, scale: ps.scale || 1, size: ps.size, save: ps.save, iter: k, float: !!ps.float }); });
     return def._steps;
   }
   effectProgram(def) {
@@ -5024,7 +5024,7 @@ class Engine {
       const st = steps[i], last = i === steps.length - 1, prog = this.effectProgram(st.def);
       if (!prog) { this.copy(input, target); return false; }
       const sc = last ? 1 : st.scale, dim = !last && st.size ? st.size(u, target.w, target.h) : [target.w * sc, target.h * sc];
-      const out = last ? target : this.rt('mp:' + (st.save || 't' + (i % 2)) + ':' + (st.size ? 'z' : sc), Math.max(2, Math.round(dim[0])), Math.max(2, Math.round(dim[1])));
+      const out = last ? target : this.rt('mp:' + (st.save || 't' + (i % 2)) + ':' + (st.size ? 'z' : sc) + (st.float ? 'f' : ''), Math.max(2, Math.round(dim[0])), Math.max(2, Math.round(dim[1])), st.float);
       this.draw(prog, out, { ...u, acScreenSize: [out.w, out.h], acPass: st.iter, inputImg_t: prev, origImg_t: input, bufA_t: saved.a || input, bufB_t: saved.b || input, bufC_t: saved.c || input });
       if (st.save) saved[st.save] = out;
       prev = out;
@@ -5229,7 +5229,6 @@ class Engine {
 const VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', '3gp', 'qt', 'mts', 'm2ts', 'hevc', 'ogv'];
 const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'avif', 'bmp', 'svg'];
 const AUDIO_EXT = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'flac', 'opus', 'caf', 'aif', 'aiff', 'wma'];
-const AUDIO_DECODE_LIMIT = 350 * 1024 * 1024;   // bigger files skip audio extraction
 
 function mediaKind(file) {
   const t = (file.type || '').toLowerCase();
@@ -5262,6 +5261,104 @@ async function probeVideo(url) {
   v.pause(); v.removeAttribute('src'); v.load(); v.remove();
   return res;
 }
+
+// ---- The sound track of an MP4 or MOV file, without reading the video -------
+// Reads the file's index, collects the AAC packets and returns them as an ADTS
+// stream (plain AAC that every browser decodes). 16-bit PCM tracks, which some
+// cameras write, are read directly.
+const AudioTrack = {
+  async moov(blob) {
+    const u32 = (d, o) => d.getUint32(o), str = (d, o) => String.fromCharCode(d.getUint8(o), d.getUint8(o + 1), d.getUint8(o + 2), d.getUint8(o + 3));
+    let off = 0;
+    while (off + 8 <= blob.size) {
+      const h = new DataView(await blob.slice(off, off + 16).arrayBuffer()); let size = u32(h, 0); const type = str(h, 4); let hdr = 8;
+      if (size === 1) { size = u32(h, 8) * 4294967296 + u32(h, 12); hdr = 16; } else if (size === 0) size = blob.size - off;
+      if (type === 'moov') { if (size > 96e6) throw new Error('index too large'); return new DataView(await blob.slice(off + hdr, off + size).arrayBuffer()); }
+      if (size < 8) break; off += size;
+    }
+    return null;
+  },
+  async read(blob) {
+    const str2 = (dv, o) => String.fromCharCode(dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2), dv.getUint8(o + 3));
+    const d = await this.moov(blob); if (!d) throw new Error('not an MP4 or MOV file');
+    const u32 = (o) => d.getUint32(o), str = (o) => String.fromCharCode(d.getUint8(o), d.getUint8(o + 1), d.getUint8(o + 2), d.getUint8(o + 3));
+    const kids = (a, b) => { const out = []; let o = a; while (o + 8 <= b) { let s = u32(o), hd = 8; const t = str(o + 4); if (s === 1) { s = u32(o + 8) * 4294967296 + u32(o + 12); hd = 16; } if (s < 8) break; out.push({ t, o, a: o + hd, b: Math.min(b, o + s) }); o += s; } return out; };
+    const find = (list, t) => list.find(x => x.t === t);
+    let pick = null, other = null;
+    for (const trak of kids(0, d.byteLength).filter(x => x.t === 'trak')) {
+      const tk = kids(trak.a, trak.b), mdia = find(tk, 'mdia'); if (!mdia) continue;
+      const md = kids(mdia.a, mdia.b), hdlr = find(md, 'hdlr'); if (!hdlr || str(hdlr.a + 8) !== 'soun') continue;
+      const minf = find(md, 'minf'), stbl = minf && find(kids(minf.a, minf.b), 'stbl'); if (!stbl) continue;
+      const sb = kids(stbl.a, stbl.b), stsd = find(sb, 'stsd'); if (!stsd) continue;
+      const ent = stsd.a + 8, fmt = str(ent + 4), kind = fmt === 'mp4a' ? 'aac' : (fmt === 'sowt' || fmt === 'twos' || (fmt === 'lpcm' && d.getUint16(ent + 16) < 2)) ? 'pcm' : null;
+      const cand = { trak, tk, md, sb, ent, fmt, kind, end: ent + u32(ent) };
+      if (!kind) { other = other || cand; continue; }
+      if (!pick || (pick.kind !== 'aac' && kind === 'aac')) pick = cand;
+    }
+    if (!pick) pick = other; if (!pick) return null;
+    const { tk, md, sb, ent, fmt, kind } = pick;
+    const mdhd = find(md, 'mdhd'), ts = d.getUint8(mdhd.a) === 1 ? u32(mdhd.a + 20) : u32(mdhd.a + 12);
+    // An edit list says how much of the start is encoder padding.
+    let skip = 0; { const edts = find(tk, 'edts'), elst = edts && find(kids(edts.a, edts.b), 'elst'); if (elst && u32(elst.a + 4) >= 1) { const v1 = d.getUint8(elst.a) === 1; const n = u32(elst.a + 4); for (let e = 0; e < n; e++) { const o = elst.a + 8 + e * (v1 ? 20 : 12), mt = v1 ? d.getInt32(o + 8) * 4294967296 + u32(o + 12) : d.getInt32(o + 4); if (mt >= 0) { skip = mt / ts; break; } } } }
+    // sample tables
+    const stsc = find(sb, 'stsc'), stsz = find(sb, 'stsz'), stco = find(sb, 'stco'), co64 = find(sb, 'co64'); if (!stsc || !stsz || !(stco || co64)) throw new Error('sound index missing');
+    const n = u32(stsz.a + 8), fixed = u32(stsz.a + 4); if (!n) return null;
+    const nch = u32((stco || co64).a + 4), choff = (c) => stco ? u32(stco.a + 8 + c * 4) : u32(co64.a + 8 + c * 8) * 4294967296 + u32(co64.a + 12 + c * 8);
+    const ne = u32(stsc.a + 4), runs = []; let i = 0;   // runs: [file offset, first sample, count]
+    for (let e = 0; e < ne && i < n; e++) { const first = u32(stsc.a + 8 + e * 12) - 1, per = u32(stsc.a + 12 + e * 12), next = e + 1 < ne ? u32(stsc.a + 8 + (e + 1) * 12) - 1 : nch;
+      for (let c = first; c < next && i < n; c++) { const cnt = Math.min(per, n - i); runs.push([choff(c), i, cnt]); i += cnt; } }
+    const sizeOf = (k) => fixed || u32(stsz.a + 12 + k * 4);
+    // First choice: the same file with the picture left out. The sound track's own
+    // index is copied as it is (only the positions change), so the browser decodes
+    // it exactly as it would the original, whatever the codec.
+    let m4a = null;
+    try {
+      const mvhd = find(kids(0, d.byteLength), 'mvhd'), trak = pick.trak, wide = !stco;
+      if (mvhd && runs.length) {
+        const cut = (x) => new Uint8Array(d.buffer.slice(d.byteOffset + x.o, d.byteOffset + x.b)), mv = cut(mvhd), tr = cut(trak), tv = new DataView(tr.buffer);
+        const head = new DataView(await blob.slice(0, 64).arrayBuffer()); let ftyp;
+        if (str2(head, 4) === 'ftyp' && head.getUint32(0) <= 64) ftyp = new Uint8Array(head.buffer.slice(0, head.getUint32(0)));
+        else { ftyp = new Uint8Array(20); const fv = new DataView(ftyp.buffer); fv.setUint32(0, 20); 'ftypqt  '.split('').forEach((c, k) => ftyp[4 + k] = c.charCodeAt(0)); fv.setUint32(12, 0); 'qt  '.split('').forEach((c, k) => ftyp[16 + k] = c.charCodeAt(0)); }
+        const lens = runs.map(r => { if (fixed) return fixed * r[2]; let L = 0; for (let k = 0; k < r[2]; k++) L += sizeOf(r[1] + k); return L; }), total = lens.reduce((x, y) => x + y, 0);
+        if (total < 3.9e9) {
+          const moovLen = 8 + mv.length + tr.length, mh = new Uint8Array(8), base = ftyp.length + moovLen + 8; new DataView(mh.buffer).setUint32(0, 8 + total); 'mdat'.split('').forEach((c, k) => mh[4 + k] = c.charCodeAt(0));
+          const co = (stco || co64).a - trak.o + 8; let pos = base; for (let c = 0; c < nch; c++) { if (wide) { tv.setUint32(co + c * 8, 0); tv.setUint32(co + c * 8 + 4, pos); } else tv.setUint32(co + c * 4, pos); pos += lens[c] || 0; }
+          const mo = new Uint8Array(8); new DataView(mo.buffer).setUint32(0, moovLen); 'moov'.split('').forEach((c, k) => mo[4 + k] = c.charCodeAt(0));
+          m4a = new Blob([ftyp, mo, mv, tr, mh, ...runs.map((r, c) => blob.slice(r[0], r[0] + lens[c]))]);
+        }
+      }
+    } catch (e) { m4a = null; }
+    if (!kind) { if (m4a) return { skip: 0, m4a }; throw new Error('the sound is in a format that can’t be read here (' + fmt + ')'); }
+    const chunk = async (r) => { let len = 0; if (fixed) len = fixed * r[2]; else for (let k = 0; k < r[2]; k++) len += sizeOf(r[1] + k); return new Uint8Array(await blob.slice(r[0], r[0] + len).arrayBuffer()); };
+    const each = async (fn) => { for (let a = 0; a < runs.length; a += 12) { const part = await Promise.all(runs.slice(a, a + 12).map(chunk)); part.forEach((bytes, k) => fn(bytes, runs[a + k])); } };
+    if (kind === 'pcm') {
+      const chs = d.getUint16(ent + 24), bits = d.getUint16(ent + 26), rate = d.getUint16(ent + 32); if (bits !== 16 || !chs || !rate) throw new Error('this kind of uncompressed sound isn’t handled');
+      const big = fmt === 'twos' || fmt === 'lpcm', per = fixed === 1 ? chs * 2 : 1, parts = []; let total = 0;
+      await each((bytes) => { parts.push(bytes); total += bytes.length; }); void per;
+      return { skip, m4a, pcm: (ctx) => { const frames = Math.floor(total / (chs * 2)), buf = ctx.createBuffer(Math.min(2, chs), Math.max(1, frames), rate), all = new Uint8Array(total); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; } const dv = new DataView(all.buffer);
+        for (let c = 0; c < Math.min(2, chs); c++) { const ch = buf.getChannelData(c); for (let f = 0; f < frames; f++) ch[f] = dv.getInt16((f * chs + c) * 2, !big) / 32768; } return buf; } };
+    }
+    const adts = async () => {
+    // AAC: the decoder settings sit in an 'esds' box somewhere inside the entry.
+    let asc = null; for (let o = ent + 8; o + 12 < pick.end; o++) { if (d.getUint8(o) === 0x65 && str(o) === 'esds') { let q = o + 8; const end = Math.min(pick.end, o - 4 + u32(o - 4));
+      const tag = () => { const t = d.getUint8(q++); let len = 0, b; do { b = d.getUint8(q++); len = (len << 7) | (b & 127); } while (b & 128); return [t, len]; };
+      while (q < end) { const [t, len] = tag(); if (t === 3) q += 3; else if (t === 4) q += 13; else if (t === 5) { asc = new Uint8Array(d.buffer.slice(d.byteOffset + q, d.byteOffset + q + len)); break; } else q += len; } break; } }
+    if (!asc || asc.length < 2) throw new Error('AAC settings not found');
+    let aot = asc[0] >> 3, fi = ((asc[0] & 7) << 1) | (asc[1] >> 7), cc = (asc[1] >> 3) & 15;
+    if (aot === 31 || fi === 15) throw new Error('unusual AAC settings');
+    if (aot === 5 || aot === 29) aot = 2;   // HE-AAC: the plain AAC layer underneath is what gets wrapped
+    if (aot < 1 || aot > 4) throw new Error('AAC type ' + aot + ' isn’t handled');
+    if (!cc) { cc = d.getUint16(ent + 24) || 2; if (cc > 7) throw new Error('channel layout not handled'); }
+    let total = 0; for (let k = 0; k < n; k++) total += sizeOf(k) + 7;
+    if (total > 700e6) throw new Error('the sound track is too long to load');
+    const outb = new Uint8Array(total); let w = 0; const pos = new Float64Array(runs.length); { let o = 0; runs.forEach((r, k) => { pos[k] = o; for (let q = 0; q < r[2]; q++) o += sizeOf(r[1] + q) + 7; }); }
+    await each((bytes, r) => { let o = pos[runs.indexOf(r)], src = 0; for (let k = 0; k < r[2]; k++) { const sz = sizeOf(r[1] + k), len = sz + 7;
+      outb[o] = 0xFF; outb[o + 1] = 0xF1; outb[o + 2] = ((aot - 1) << 6) | (fi << 2) | (cc >> 2); outb[o + 3] = ((cc & 3) << 6) | (len >> 11); outb[o + 4] = (len >> 3) & 255; outb[o + 5] = ((len & 7) << 5) | 0x1F; outb[o + 6] = 0xFC;
+      outb.set(bytes.subarray(src, src + sz), o + 7); o += len; src += sz; } w += bytes.length; });
+    return outb.buffer; };
+    return { skip, m4a, adts, frames: n };
+  }
+};
 
 const Media = {
   items: new Map(),
@@ -5346,18 +5443,37 @@ const Media = {
       m.duration = m.audio.duration;
     } else if (m.type === 'video') {
       // Audio from a video loads in the background so the clip shows up right away.
-      m.audioReady = this.decodeAudio(m);
+      m.audioReady = this.decodeAudio(m).then(() => {
+        // The sound arrived after the clip was already on the timeline: draw its waveform and, if playing, bring it in.
+        try { if (m.audio && typeof Sound !== 'undefined') { Sound.peaks(m).then(() => { try { UI.renderTimeline(); } catch (e) { } }); if (typeof Player !== 'undefined' && Player.playing && Player.resyncAudio) Player.resyncAudio(); } } catch (e) { }
+      });
     }
     this.items.set(m.id, m);
     return m;
   },
+  // Sound from a file. Small files are handed to the browser whole. A big
+  // phone video can't be: reading 300 MB or more into memory fails on an
+  // iPhone, and the clip used to come out silent. For those, only the sound
+  // track is pulled out of the file (a few MB) and decoded.
   async decodeAudio(m) {
-    if (m.blob.size > AUDIO_DECODE_LIMIT) { m.audioSkipped = true; return; }
-    try {
-      const ctx = this.getAudioCtx(); if (!ctx) return;
-      const buf = await m.blob.arrayBuffer();
-      m.audio = await withTimeout(new Promise((res, rej) => ctx.decodeAudioData(buf, res, rej)), 60000, null);
-    } catch (e) { m.audio = null; }
+    const ctx = this.getAudioCtx(); if (!ctx) return;
+    const dec = (buf) => withTimeout(new Promise((res, rej) => { try { const p = ctx.decodeAudioData(buf, res, rej); if (p && p.catch) p.catch(rej); } catch (e) { rej(e); } }), 180000, null);
+    const phone = /iPhone|iPad|iPod|Android/.test(navigator.userAgent), mb = m.blob.size / 1048576, whole = mb <= (phone ? (m.type === 'video' ? 45 : 150) : 350);
+    m.audioSkipped = false; m.audioWhy = '';
+    const fromWhole = async () => { try { m.audio = await dec(await m.blob.arrayBuffer()); } catch (e) { m.audio = null; } };
+    const fromTrack = async () => {
+      try { const tr = await AudioTrack.read(m.blob); if (!tr) { m.noAudioTrack = true; return; }
+        let buf = null, from = 'track';
+        if (tr.m4a) { try { buf = await dec(await tr.m4a.arrayBuffer()); } catch (e) { buf = null; } }
+        if (!buf && (tr.pcm || tr.adts)) { from = 'packets'; buf = tr.pcm ? tr.pcm(ctx) : await dec(await tr.adts());
+          if (buf && tr.skip > 0.004 && tr.skip < 0.5) { const n0 = Math.round(tr.skip * buf.sampleRate), nb = ctx.createBuffer(buf.numberOfChannels, Math.max(1, buf.length - n0), buf.sampleRate); for (let c = 0; c < buf.numberOfChannels; c++) nb.copyToChannel(buf.getChannelData(c).subarray(n0), c); buf = nb; } }
+        if (!buf) throw new Error('the sound track could not be decoded');
+        m.audio = buf || null; if (m.audio) m.audioFrom = from;
+      } catch (e) { m.audioWhy = String(e && e.message || e); m.audio = null; }
+    };
+    if (m.type === 'video' && !whole) { await fromTrack(); if (!m.audio && !m.noAudioTrack && mb <= 350) await fromWhole(); }
+    else { await fromWhole(); if (!m.audio && m.type === 'video') await fromTrack(); }
+    if (!m.audio && !m.noAudioTrack && m.type === 'video') { m.audioSkipped = true; if (typeof TFLog !== 'undefined') try { TFLog.add('audio', m.name + ': ' + (m.audioWhy || 'the sound could not be decoded')); } catch (e) { } }
   },
   // Small frames for the timeline filmstrip.
   async makeThumbs(m, onUpdate) {
@@ -6785,6 +6901,9 @@ const Sound = {
 
   // ---- export: everything mixed down to one stereo buffer ---------------------
   async mix(p) {
+    // Sound that is still being read (a big file just added, or a project just reopened) is waited for.
+    // Exporting during that time used to give a silent file.
+    { const wait = p.layers.map(l => Media.items.get(l.mediaId)).filter(m => m && !m.audio && m.audioReady).map(m => m.audioReady.catch(() => { })); if (wait.length) { if (typeof UI !== 'undefined' && UI.busy && !(typeof Exporter !== 'undefined' && Exporter.busy)) UI.busy('Reading the sound…'); await Promise.all(wait); if (typeof UI !== 'undefined' && UI.busy && !(typeof Exporter !== 'undefined' && Exporter.busy)) UI.busy(null); } }
     const layers = p.layers.filter(l => this.audible(l, p) && Media.items.get(l.mediaId)?.audio && !(l.video && l.video.freeze != null));
     if (!layers.length) return null;
     const sr = 48000, len = Math.ceil(p.duration * sr);
@@ -7165,6 +7284,86 @@ async function pickVideoCodec(W, H, fps, bitrate) {
   return null;
 }
 
+// ---- Sound for browsers without an audio encoder ---------------------------
+// Plays the finished mix into the system recorder (silently) and reads the
+// compressed packets back out of the MP4 pieces it produces.
+function parseRecordedAudio(buf, wantInfoOnly) {
+  const d = new DataView(buf), N = d.byteLength, str = (o) => String.fromCharCode(d.getUint8(o), d.getUint8(o + 1), d.getUint8(o + 2), d.getUint8(o + 3));
+  const kids = (a, b) => { const out = []; let o = a; while (o + 8 <= b) { let s = d.getUint32(o), hd = 8; const t = str(o + 4); if (s === 1) { s = d.getUint32(o + 8) * 4294967296 + d.getUint32(o + 12); hd = 16; } else if (s === 0) s = b - o; if (s < 8) break; out.push({ t, o, a: o + hd, b: Math.min(b, o + s), whole: o + s <= b }); o += s; } return out; };
+  const find = (l, t) => l.find(x => x.t === t), top = kids(0, N), moov = find(top, 'moov'); if (!moov || !moov.whole) return null;
+  let info = null; const mk = kids(moov.a, moov.b);
+  for (const trak of mk.filter(x => x.t === 'trak')) {
+    const tk = kids(trak.a, trak.b), mdia = find(tk, 'mdia'); if (!mdia) continue; const md = kids(mdia.a, mdia.b), hdlr = find(md, 'hdlr'); if (!hdlr || str(hdlr.a + 8) !== 'soun') continue;
+    const tkhd = find(tk, 'tkhd'), id = tkhd ? d.getUint32(tkhd.a + (d.getUint8(tkhd.a) === 1 ? 20 : 12)) : 1, mdhd = find(md, 'mdhd'), ts = d.getUint8(mdhd.a) === 1 ? d.getUint32(mdhd.a + 20) : d.getUint32(mdhd.a + 12);
+    const minf = find(md, 'minf'), stbl = find(kids(minf.a, minf.b), 'stbl'), sb = kids(stbl.a, stbl.b), stsd = find(sb, 'stsd'), ent = stsd.a + 8, fmt = str(ent + 4), end = ent + d.getUint32(ent);
+    const ch = d.getUint16(ent + 24) || 2; let desc = null, codec = null, rate = d.getUint16(ent + 32) || ts;
+    if (fmt === 'mp4a') { codec = 'aac';
+      for (let o = ent + 8; o + 12 < end; o++) if (d.getUint8(o) === 0x65 && str(o) === 'esds') { let q = o + 8; const e2 = Math.min(end, o - 4 + d.getUint32(o - 4)); const tag = () => { const t = d.getUint8(q++); let len = 0, b; do { b = d.getUint8(q++); len = (len << 7) | (b & 127); } while (b & 128); return [t, len]; };
+        while (q < e2) { const [t, len] = tag(); if (t === 3) q += 3; else if (t === 4) q += 13; else if (t === 5) { desc = new Uint8Array(buf.slice(q, q + len)); break; } else q += len; } break; }
+      if (!desc) return null; const fi = ((desc[0] & 7) << 1) | (desc[1] >> 7), tab = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]; if (tab[fi]) rate = tab[fi];
+    } else if (fmt === 'Opus') { codec = 'opus'; rate = 48000; } else return null;
+    info = { codec, rate, ch, desc, ts, id, sb }; break;
+  }
+  if (!info || wantInfoOnly) return info;
+  let defDur = 1024, defSize = 0; const mvex = find(mk, 'mvex'); if (mvex) for (const trex of kids(mvex.a, mvex.b).filter(x => x.t === 'trex')) if (d.getUint32(trex.a + 4) === info.id) { defDur = d.getUint32(trex.a + 12) || defDur; defSize = d.getUint32(trex.a + 16); }
+  const frames = [], u8 = new Uint8Array(buf), push = (off, size, dur) => { if (off + size <= N && size > 0) frames.push({ data: u8.slice(off, off + size), dur: dur / info.ts }); };
+  const moofs = top.filter(x => x.t === 'moof');
+  if (moofs.length) {
+    for (const moof of moofs) { if (!moof.whole) break; for (const traf of kids(moof.a, moof.b).filter(x => x.t === 'traf')) {
+      const tf = kids(traf.a, traf.b), tfhd = find(tf, 'tfhd'); if (!tfhd) continue; const fl = d.getUint32(tfhd.a) & 0xffffff; if (d.getUint32(tfhd.a + 4) !== info.id) continue;
+      let q = tfhd.a + 8, base = moof.o, dDur = defDur, dSize = defSize; if (fl & 1) { base = d.getUint32(q) * 4294967296 + d.getUint32(q + 4); q += 8; } if (fl & 2) q += 4; if (fl & 8) { dDur = d.getUint32(q); q += 4; } if (fl & 16) { dSize = d.getUint32(q); q += 4; }
+      let ptr = base;
+      for (const trun of tf.filter(x => x.t === 'trun')) { const f2 = d.getUint32(trun.a) & 0xffffff, cnt = d.getUint32(trun.a + 4); let r = trun.a + 8; if (f2 & 1) { ptr = base + d.getInt32(r); r += 4; } if (f2 & 4) r += 4;
+        for (let i = 0; i < cnt; i++) { let dur = dDur, size = dSize; if (f2 & 0x100) { dur = d.getUint32(r); r += 4; } if (f2 & 0x200) { size = d.getUint32(r); r += 4; } if (f2 & 0x400) r += 4; if (f2 & 0x800) r += 4; push(ptr, size, dur); ptr += size; } } } }
+  } else {
+    // one plain index at the end (not in pieces)
+    const sb = info.sb, stsc = find(sb, 'stsc'), stsz = find(sb, 'stsz'), stco = find(sb, 'stco'), co64 = find(sb, 'co64'), stts = find(sb, 'stts'); if (!stsc || !stsz || !(stco || co64)) return null;
+    const n = d.getUint32(stsz.a + 8), fixed = d.getUint32(stsz.a + 4), nch = d.getUint32((stco || co64).a + 4), choff = (c) => stco ? d.getUint32(stco.a + 8 + c * 4) : d.getUint32(co64.a + 8 + c * 8) * 4294967296 + d.getUint32(co64.a + 12 + c * 8);
+    const durs = new Uint32Array(n).fill(defDur); if (stts) { let i = 0; const c = d.getUint32(stts.a + 4); for (let e = 0; e < c && i < n; e++) { const cnt = d.getUint32(stts.a + 8 + e * 8), dl = d.getUint32(stts.a + 12 + e * 8); for (let k = 0; k < cnt && i < n; k++) durs[i++] = dl; } }
+    const ne = d.getUint32(stsc.a + 4); let i = 0;
+    for (let e = 0; e < ne && i < n; e++) { const first = d.getUint32(stsc.a + 8 + e * 12) - 1, per = d.getUint32(stsc.a + 12 + e * 12), next = e + 1 < ne ? d.getUint32(stsc.a + 8 + (e + 1) * 12) - 1 : nch;
+      for (let c = first; c < next && i < n; c++) { let o = choff(c); for (let k = 0; k < per && i < n; k++) { const sz = fixed || d.getUint32(stsz.a + 12 + i * 4); push(o, sz, durs[i]); o += sz; i++; } } }
+  }
+  return { ...info, frames };
+}
+// Finds the time in `got` (the recording) where `mix` starts, by sliding the loudest two seconds of the mix along it.
+function findMixStart(mix, got, lead) {
+  const A = mix.getChannelData(0), B = got.getChannelData(0), ra = mix.sampleRate, rb = got.sampleRate, win = Math.min(A.length, Math.round(ra * 2)); if (win < ra * 0.2) return null;
+  let best = 0, at = 0; const hop = Math.round(ra * 0.5), lim = Math.min(A.length - win, Math.round(ra * 30)); for (let o = 0; o <= lim; o += hop) { let e = 0; for (let i = o; i < o + win; i += 32) e += A[i] * A[i]; if (e > best) { best = e; at = o; } }
+  if (best < 1e-4) return null;
+  const idx = []; for (let i = at; i < at + win; i += 12) idx.push(i); const k = rb / ra; let bs = -Infinity, bl = 0;
+  const score = (lagS) => { let sc = 0; for (const i of idx) { const j = Math.round((i / ra + lagS) * rb); sc += A[i] * (B[j] || 0); } return sc; };
+  for (let lag = Math.max(0, lead - 0.45); lag <= lead + 0.45; lag += 0.0005) { const sc = score(lag); if (sc > bs) { bs = sc; bl = lag; } }
+  void k; return bs > 0 ? bl : null;
+}
+function recordMixedAudio(audioBuf) {
+  const LEAD = 0.6;
+  try {
+    if (!('MediaRecorder' in window)) return null;
+    const type = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4'].find(t => { try { return MediaRecorder.isTypeSupported(t); } catch (e) { return false; } }); if (!type) return null;
+    const ctx = Media.getAudioCtx(); if (!ctx) return null; try { ctx.resume(); } catch (e) { }
+    const dest = ctx.createMediaStreamDestination(), src = ctx.createBufferSource(); src.buffer = audioBuf; src.connect(dest);
+    const rec = new MediaRecorder(dest.stream, { mimeType: type, audioBitsPerSecond: 192000 }), chunks = []; let infoDone, stopDone, gotInfo = false, stopped = false;
+    const job = { t0: performance.now(), info: new Promise(r => { infoDone = r; }), done: new Promise(r => { stopDone = r; }) };
+    const all = async () => await new Blob(chunks).arrayBuffer();
+    rec.ondataavailable = async (e) => { if (e.data && e.data.size) chunks.push(e.data); if (!gotInfo && chunks.length) { try { const i = parseRecordedAudio(await all(), true); if (i) { gotInfo = true; infoDone({ codec: i.codec, rate: i.rate, ch: i.ch }); } } catch (er) { } } };
+    rec.onstop = async () => { stopped = true; try { const bytes = await all(), r = parseRecordedAudio(bytes, false); if (!gotInfo) infoDone(r ? { codec: r.codec, rate: r.rate, ch: r.ch } : null);
+      // Where the mix begins inside the recording. The recorder needs a moment to start, so the mix is played after a short silence and then looked for.
+      if (r) { r.offset = Math.max(0, LEAD - 0.06); try { const got = await new Promise((res, rej) => { const pr = ctx.decodeAudioData(bytes.slice(0), res, rej); if (pr && pr.catch) pr.catch(rej); }); const o = findMixStart(audioBuf, got, LEAD); if (o != null) { r.offset = o; r.measured = true; } } catch (e) { } }
+      stopDone(r); } catch (e) { console.warn('recorded sound not readable', e); infoDone(null); stopDone(null); } };
+    rec.onerror = () => { infoDone(null); stopDone(null); };
+    const stop = () => { if (stopped) return; try { if (rec.state !== 'inactive') rec.stop(); else { stopped = true; stopDone(null); } } catch (e) { stopDone(null); } };
+    job.cancel = () => { try { src.onended = null; src.stop(); } catch (e) { } stop(); try { src.disconnect(); } catch (e) { } };
+    src.onended = () => setTimeout(stop, 600);
+    rec.start(500); src.start(ctx.currentTime + LEAD); job.t0 = performance.now();
+    // Some recorders only write their header at the end. Don't hold the export up for it.
+    setTimeout(() => { if (!gotInfo) { infoDone(null); } }, 4000);
+    return job;
+  } catch (e) { console.warn('sound recorder not started', e); return null; }
+}
+
+// Clips whose sound could not be read, for the note after an export.
+function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
   busy: false, cancel: false,
   async run(p, opts, onProgress) {
@@ -7187,7 +7386,7 @@ const Exporter = {
     if (!codec) { this.busy = false; throw new Error(`H.264 at ${W}×${H} isn’t supported on this device. Try a lower resolution.`); }
 
     // Audio: AAC first (plays everywhere, including iPhone Photos), Opus as a fallback.
-    let audioBuf = null, audioOk = false, aCodec = null;
+    let audioBuf = null, audioOk = false, aCodec = null, recJob = null, aRate = 48000, aCh = 2, audioNote = '';
     if (opts.audio !== false) {
       try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); }
       if (audioBuf && 'AudioEncoder' in window) {
@@ -7196,13 +7395,20 @@ const Exporter = {
         }
         audioOk = !!aCodec;
       }
+      // No audio encoder (iPhones before iOS 26, some Android browsers): the mix is
+      // recorded by the system's own recorder while the picture is encoded, and its
+      // packets are copied into the file. Before this the export came out silent.
+      if (audioBuf && (!audioOk || opts.recordAudio)) {
+        recJob = recordMixedAudio(audioBuf); const info = recJob && await recJob.info;
+        if (info) { audioOk = true; aCodec = [null, info.codec]; aRate = info.rate; aCh = info.ch; } else { if (recJob) recJob.cancel(); recJob = null; if (opts.recordAudio) audioOk = false; }
+      }
     }
 
     const target = new Mp4Muxer.ArrayBufferTarget();
     const muxer = new Mp4Muxer.Muxer({
       target,
       video: { codec: muxCodec, width: W, height: H, frameRate: fps },
-      audio: audioOk ? { codec: aCodec[1], numberOfChannels: 2, sampleRate: 48000 } : undefined,
+      audio: audioOk ? { codec: aCodec[1], numberOfChannels: aCh, sampleRate: aRate } : undefined,
       fastStart: 'in-memory',
       firstTimestampBehavior: 'offset'
     });
@@ -7230,7 +7436,14 @@ const Exporter = {
       await venc.flush();
       if (encErr) throw encErr;
 
-      if (audioOk && audioBuf) {
+      if (recJob) {
+        // The recording runs in real time, so a short wait is possible when the picture finished first.
+        const t0 = performance.now(); let res; recJob.done.then(r => { res = r; });
+        while (res === undefined) { if (this.cancel) throw new Error('Export cancelled'); onProgress(0.95 + 0.05 * Math.min(1, (performance.now() - recJob.t0) / 1000 / Math.max(0.5, audioBuf.duration))); await sleep(120); }
+        const lim = Math.round(p.duration * 1e6); let ts = 0, first = true;
+        if (res && res.frames.length) { let seen = 0; const off = (res.offset || 0) + (res.codec === 'aac' ? res.frames[0].dur : 0); for (const f of res.frames) { seen += f.dur; if (seen - f.dur / 2 < off) continue; const du = Math.round(f.dur * 1e6); if (ts > lim) break; muxer.addAudioChunkRaw(f.data, 'key', ts, du, first && res.desc ? { decoderConfig: { codec: res.codec === 'aac' ? 'mp4a.40.2' : 'opus', sampleRate: aRate, numberOfChannels: aCh, description: res.desc } } : undefined); first = false; ts += du; } audioNote = ', sound recorded in real time'; }
+        else { audioOk = false; audioNote = ''; }
+      } else if (audioOk && audioBuf) {
         const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: (e) => { encErr = e; } });
         aenc.configure({ codec: aCodec[0], sampleRate: 48000, numberOfChannels: 2, bitrate: 192000 });
         const ch0 = audioBuf.getChannelData(0), ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
@@ -7248,9 +7461,10 @@ const Exporter = {
       }
       muxer.finalize();
       onProgress(1);
-      return { blob: new Blob([target.buffer], { type: 'video/mp4' }), W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + ')' };
+      return { blob: new Blob([target.buffer], { type: 'video/mp4' }), W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + audioNote + ')', silent: silentClips(p) };
     } finally {
       try { venc.close(); } catch (e) { }
+      try { recJob && recJob.cancel(); } catch (e) { }
       this.busy = false;
       engine.setSize(prevSize[0], prevSize[1], p.width, p.height);
       Runtime.clearCaches();
@@ -7788,7 +8002,7 @@ const App = {
         this.placeMedia(m, opts);
         added++;
         Media.makeThumbs(m, () => { UI.renderTimeline(); UI.renderLibrary && UI.renderLibrary(); });
-        if (m.audioReady) m.audioReady.then(() => { if (m.audioSkipped) toast(`${m.name} is very large, so its sound wasn’t loaded. Trim it shorter to keep the sound.`, 5000); Sound.peaks(m).then(() => UI.renderTimeline()); });
+        if (m.audioReady) m.audioReady.then(() => { if (m.audioSkipped) toast(`The sound of ${m.name} couldn’t be read${m.audioWhy ? ' (' + m.audioWhy + ')' : ''}, so this clip will be silent. Converting it to MP4 with AAC sound fixes that.`, 8000); Sound.peaks(m).then(() => UI.renderTimeline()); });
         else if (m.type === 'audio') Sound.peaks(m).then(() => UI.renderTimeline());
       } catch (e) { UI.busy(null); UI.modal('Couldn’t add that file', el('p', {}, e.message || String(e)), [['OK', () => UI.closeModal()]]); }
     }
@@ -8644,7 +8858,7 @@ const UI = {
   },
   panel_volume(body, l) {
     const m = Media.items.get(l.mediaId);
-    if (!m || !m.audio) { body.append(el('p', { class: 'hint' }, m && m.audioSkipped ? 'This file was too large for its sound to be loaded.' : 'This clip has no sound the browser can read.')); return; }
+    if (!m || !m.audio) { body.append(el('p', { class: 'hint' }, m && m.audioSkipped ? 'The sound of this file couldn’t be read' + (m.audioWhy ? ' (' + m.audioWhy + ').' : '.') : m && m.noAudioTrack ? 'This video has no sound track.' : 'This clip has no sound the browser can read.')); return; }
     body.append(this.propRow(l, 'volume', 'Volume %', { min: 0, max: 400, smax: 200 }),
       this.row('Fade in (s)', el('input', { type: 'number', min: 0, max: 30, step: 0.1, value: l.fadeIn || 0, onchange: (e) => App.change(() => { l.fadeIn = clamp(+e.target.value || 0, 0, l.dur); }) })),
       this.row('Fade out (s)', el('input', { type: 'number', min: 0, max: 30, step: 0.1, value: l.fadeOut || 0, onchange: (e) => App.change(() => { l.fadeOut = clamp(+e.target.value || 0, 0, l.dur); }) })),
@@ -9021,7 +9235,7 @@ const UI = {
       const url = URL.createObjectURL(res.blob);
       this.modal('Export finished', el('div', {},
         el('video', { src: url, controls: true, playsinline: true, class: 'result' }),
-        el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.${res.hadAudio && !res.audio ? ' Audio was skipped because this browser can’t encode audio.' : ''}`),
+        el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.${res.hadAudio && !res.audio ? ' Audio was skipped because this browser can’t encode audio.' : ''}${res.silent && res.silent.length ? ' No sound could be read from: ' + res.silent.join(', ') + '.' : ''}`),
         el('p', { class: 'hint' }, 'On iPhone, Save opens the share sheet: choose Save Video to put it in Photos.')),
         [['Close', () => { URL.revokeObjectURL(url); this.closeModal(); }], ['Save video', async () => { const r = await saveBlob(res.blob, name); if (r === 'downloaded') toast('Saved to your downloads.'); else if (r === 'saved' || r === 'shared') toast('Saved.'); }, 'primary']]);
     } catch (e) {
@@ -10902,7 +11116,8 @@ Object.assign(App, {
   },
   extractAudio() {
     const l = this.layer(), m = l && Media.items.get(l.mediaId); if (!l || l.type !== 'video' || !m) { toast('Select a video clip.'); return; }
-    if (!m.audio) { toast('This clip has no sound (or it is still loading).'); return; }
+    if (!m.audio) { toast(m.noAudioTrack ? 'This video has no sound track.' : m.audioSkipped ? 'The sound of this file couldn’t be read.' : 'The sound is still loading. Try again in a moment.', 4000); return; }
+    if (l.muted && this.project.layers.some(x => x.type === 'audio' && x.mediaId === m.id && Math.abs(x.start - l.start) < 0.01)) { toast('This clip’s sound is already on its own clip.'); return; }
     const a = this.baseLayer('audio', l.name + ' (audio)'); a.mediaId = m.id; a.start = l.start; a.dur = l.dur; a.in = l.in || 0; a.audioOpts = { speed: (l.video && l.video.speed) || 1 }; a.volume = l.volume;
     this._label = 'Extract audio';
     this.addLayer(a, { kind: 'audio' }); this.change(() => { const v = this.layer(l.id); a.start = l.start; if (v) v.muted = true; }, ''); this.sel = l.id; UI.refresh(); toast('Sound moved to its own audio clip. The video clip is muted.');
@@ -11516,6 +11731,8 @@ Object.assign(UI, {
 const MP_VER = '0.10.14', MP_CFG = window.TF_MP || {}, MP_BASE = MP_CFG.base || `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VER}`;
 const MP_FACE_MODEL = MP_CFG.face || 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 const MP_SEG_MODEL = MP_CFG.seg || 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+// The detailed model also labels hair, skin and clothes, which gives a much more exact outline. Both are Apache 2.0.
+const MP_SEG_MULTI = MP_CFG.segMulti || 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
 const FACE_PTS = [10, 152, 234, 454, 33, 133, 362, 263, 61, 291, 0, 17, 1, 172, 397];   // landmark numbers kept per face
 const FaceAI = {
   vision: null, lm: null, lmImage: null, seg: null, data: new Map(), cancel: false, ts: 0,
@@ -11597,24 +11814,78 @@ const FaceAI = {
     return U;
   },
   // ---- person cutout ----
-  async segmenter() {
+  // kind: 'detail' (hair, skin and clothes model) or 'fast' (the small one).
+  async segmenter(kind) {
+    const want = kind || this.segWant || 'detail'; this.segWant = want;
+    if (this.seg && (this.segKind === want || this.segFell === want)) return this.seg;
+    if (this._segLoad && this._segLoadKind === want) return this._segLoad;
     const mod = await this.lib();
-    if (!this.seg) { const make = (delegate) => mod.ImageSegmenter.createFromOptions(this.vision, { baseOptions: { modelAssetPath: MP_SEG_MODEL, delegate }, runningMode: 'VIDEO', outputCategoryMask: false, outputConfidenceMasks: true });
-      try { this.seg = await make('GPU'); } catch (e) { this.seg = await make('CPU'); } }
-    return this.seg;
+    const make = (path, delegate) => mod.ImageSegmenter.createFromOptions(this.vision, { baseOptions: { modelAssetPath: path, delegate }, runningMode: 'VIDEO', outputCategoryMask: false, outputConfidenceMasks: true });
+    const load = async (k) => { const path = k === 'detail' ? MP_SEG_MULTI : MP_SEG_MODEL; try { return await make(path, 'GPU'); } catch (e) { return await make(path, 'CPU'); } };
+    this._segLoadKind = want;
+    this._segLoad = (async () => {
+      let seg = null, got = want;
+      try { seg = await load(want); } catch (e) { if (want !== 'detail') throw e; console.warn('detailed person model not loaded, using the small one', e); got = 'fast'; seg = await load('fast'); }
+      const old = this.seg; this.seg = seg; this.segKind = got; this.segFell = got !== want ? want : null; this._cz = new Map();
+      try { if (old && old !== seg) old.close(); } catch (e) { }
+      return seg;
+    })();
+    try { return await this._segLoad; } finally { this._segLoad = null; }
   },
-  maskCanvas(src) {
-    let out = null; this.ts += 40;
-    this.seg.segmentForVideo(src, this.ts, (res) => {
-      const ms = res.confidenceMasks, mk = ms[ms.length > 1 ? 1 : 0], w = mk.width, h = mk.height, a = mk.getAsFloat32Array();
-      const cv = this._mc || (this._mc = document.createElement('canvas')); cv.width = w; cv.height = h; const ctx = cv.getContext('2d'), id = ctx.createImageData(w, h);
-      for (let i = 0; i < a.length; i++) { const v = Math.round(a[i] * 255); id.data[i * 4] = v; id.data[i * 4 + 1] = v; id.data[i * 4 + 2] = v; id.data[i * 4 + 3] = 255; }
+  // The mask for one frame. `fr` is the frame exactly as it is drawn (a render
+  // target), so the mask always belongs to the picture on screen, also when the
+  // clip is slowed, reversed, frozen or being exported. `img` is used for photos.
+  // The model only sees 256 x 256 pixels, so after the first look it is shown
+  // just the area around the person. That gives the outline several times more detail.
+  maskFor(key, fr, img, mw, mh, zoom = true, retry = false) {
+    if (!this._cz) this._cz = new Map();
+    let z = this._cz.get(key); if (!z) { z = {}; this._cz.set(key, z); }
+    const now = performance.now(), B = (zoom && !retry && z.box && now - z.at < 1500) ? z.box : [0, 0, 1, 1], boxed = B[2] - B[0] < 0.999 || B[3] - B[1] < 0.999;
+    const pw = (B[2] - B[0]) * mw, ph = (B[3] - B[1]) * mh, k = 320 / Math.max(pw, ph), w = Math.max(16, Math.round(pw * k)), h = Math.max(16, Math.round(ph * k));
+    let input = null;
+    if (fr && fr.tex) {
+      const E = engine, gl = E.gl, prog = E.program('cutcrop', VS_FULL, FS_HEAD + 'uniform sampler2D uTex; uniform vec4 uUV;\nvoid main(){ vec4 c = texture2D(uTex, mix(uUV.xy, uUV.zw, vUv)); gl_FragColor = vec4(c.rgb / max(c.a, 1e-4), 1.0); }');
+      const rt = E.rt('cut_in', w, h); E.draw(prog, rt, { uTex: fr, uUV: [B[0], B[1], B[2], B[3]] });
+      if (!this._px || this._px.length !== w * h * 4) this._px = new Uint8ClampedArray(w * h * 4);
+      E.bindTarget(rt); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this._px); input = new ImageData(this._px, w, h);
+    } else if (img) {
+      const c = this._ic || (this._ic = document.createElement('canvas')); c.width = w; c.height = h; const iw = img.videoWidth || img.naturalWidth || img.width, ih = img.videoHeight || img.naturalHeight || img.height;
+      c.getContext('2d').drawImage(img, B[0] * iw, B[1] * ih, (B[2] - B[0]) * iw, (B[3] - B[1]) * ih, 0, 0, w, h); input = c;
+    } else return null;
+    let out = null, again = false; this.ts += 40;
+    this.seg.segmentForVideo(input, this.ts, (res) => {
+      const ms = res.confidenceMasks; if (!ms || !ms.length) return;
+      const multi = ms.length > 2, mk = ms[0], W = mk.width, H = mk.height, a = mk.getAsFloat32Array();
+      const cv = z.mc || (z.mc = document.createElement('canvas')); if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; } const ctx = cv.getContext('2d'), id = z.id && z.id.width === W && z.id.height === H ? z.id : (z.id = ctx.createImageData(W, H)), d = id.data;
+      let x0 = W, y0 = H, x1 = -1, y1 = -1;
+      for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) { const p = multi ? 1 - a[i] : a[i], v = p <= 0 ? 0 : p >= 1 ? 255 : (p * 255 + 0.5) | 0, o = i * 4; d[o] = v; d[o + 1] = v; d[o + 2] = v; d[o + 3] = 255;
+        if (v > 76) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
       ctx.putImageData(id, 0, 0);
-      // Soften the stair-steps of the small mask, and steady it against the frame before so the edge doesn't flicker.
-      const sm = this._ms || (this._ms = document.createElement('canvas')); const fresh = sm.width !== w * 2 || sm.height !== h * 2 || performance.now() - (this._mts || 0) > 250; if (fresh) { sm.width = w * 2; sm.height = h * 2; } const sx = sm.getContext('2d'); sx.imageSmoothingEnabled = true; sx.imageSmoothingQuality = 'high'; try { sx.filter = 'blur(1.2px)'; } catch (e) { } sx.globalAlpha = fresh ? 1 : 0.65; sx.drawImage(cv, 0, 0, sm.width, sm.height); sx.globalAlpha = 1; this._mts = performance.now(); out = sm;
+      const found = x1 >= 0;
+      // Looking at a cut-out area and the person is gone from it: look at the whole frame again.
+      if (boxed && !found) { again = true; return; }
+      // The mask in frame space (long side 512).
+      const fk = 512 / Math.max(mw, mh), FW = Math.max(16, Math.round(mw * fk)), FH = Math.max(16, Math.round(mh * fk));
+      const N = z.n || (z.n = document.createElement('canvas')); if (N.width !== FW || N.height !== FH) { N.width = FW; N.height = FH; } const nx = N.getContext('2d'); nx.imageSmoothingEnabled = true; nx.imageSmoothingQuality = 'high';
+      nx.fillStyle = '#000'; nx.fillRect(0, 0, FW, FH); nx.drawImage(cv, B[0] * FW, B[1] * FH, (B[2] - B[0]) * FW, (B[3] - B[1]) * FH);
+      const F = z.f || (z.f = document.createElement('canvas')); const fresh = F.width !== FW || F.height !== FH || now - (z.at || 0) > 250; if (F.width !== FW || F.height !== FH) { F.width = FW; F.height = FH; }
+      const fx = F.getContext('2d'); fx.globalAlpha = fresh ? 1 : 0.8; fx.drawImage(N, 0, 0); fx.globalAlpha = 1; out = F; z.at = now;
+      // Where to look next time: the person's box with room around it.
+      if (!found || !zoom) { z.box = null; return; }
+      const bw = B[2] - B[0], bh = B[3] - B[1]; let n0 = B[0] + x0 / W * bw, n1 = B[0] + (x1 + 1) / W * bw, m0 = B[1] + y0 / H * bh, m1 = B[1] + (y1 + 1) / H * bh;
+      // More room on a side where the person touches the edge of the area that was looked at.
+      const px = 0.2 * (n1 - n0) + 0.03, py = 0.2 * (m1 - m0) + 0.03; n0 -= px * (boxed && x0 <= 1 ? 2.5 : 1); n1 += px * (boxed && x1 >= W - 2 ? 2.5 : 1); m0 -= py * (boxed && y0 <= 1 ? 2.5 : 1); m1 += py * (boxed && y1 >= H - 2 ? 2.5 : 1);
+      // The model was trained on roughly square pictures, so the area is never a thin strip.
+      let cw = (n1 - n0) * mw, ch = (m1 - m0) * mh; if (cw < 0.6 * ch) { const e = (0.6 * ch - cw) / mw / 2; n0 -= e; n1 += e; } else if (ch < 0.6 * cw) { const e = (0.6 * cw - ch) / mh / 2; m0 -= e; m1 += e; }
+      n0 = Math.max(0, n0); m0 = Math.max(0, m0); n1 = Math.min(1, n1); m1 = Math.min(1, m1);
+      if ((n1 - n0) * (m1 - m0) > 0.62) { z.box = null; return; }
+      const q = (v) => Math.round(v * 64) / 64, nb = [q(n0), q(m0), Math.min(1, q(n1)), Math.min(1, q(m1))];
+      z.box = nb[2] - nb[0] > 0.03 && nb[3] - nb[1] > 0.03 ? nb : null;
     });
+    if (again) { z.box = null; return this.maskFor(key, fr, img, mw, mh, zoom, true); }
     return out;
-  }
+  },
+  maskCanvas(src) { return this.maskFor('_one', null, src, src.videoWidth || src.naturalWidth || src.width, src.videoHeight || src.naturalHeight || src.height, false); }
 };
 
 fx3('retouch', 'Face Retouch', 'Retouch', 'Skin, eyes, teeth, face shape and light makeup. Open the Retouch tab to find the faces first.', [
@@ -11663,30 +11934,19 @@ void main(){ vec2 uv = acScreenNorm; float asp = xAsp(); vec4 orig = tfGet(uv); 
   c3 = mix(c3, c3 * 0.6 + blushcol.rgb * 0.5, blush * cheek * sk * 0.6);
   vec4 o = xOut(c3, s.a); if (compare > 0.001) { if (uv.x < compare) o = orig; if (abs(uv.x - compare) < 0.0015) o = vec4(1.0); }
   gl_FragColor = o; }`);
-fx3('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Loads a small model the first time.', [S('edge', 'Edge Position', 0.5, 0.05, 0.95), S('soft', 'Edge Softness', 0.12, 0, 0.5), S('refine', 'Follow the Outline', 0.7, 0, 1), S('smoothE', 'Smooth the Edge', 0.6, 0, 1), S('shrink', 'Trim the Edge', 0.15, 0, 1), S('despill', 'Clean Edge Colour', 0.5, 0, 1), B('invert', 'Keep the Background Instead', false), B('showmask', 'Show the Mask', false)], `
-uniform sampler2D uCut; uniform float uCutOn;
-// The model's mask is small and blocky. It is smoothed here, and each
-// neighbour counts more when its colour matches this pixel, so the edge
-// settles on the real outline of the person instead of on the mask's steps.
-float cutMask(vec2 uv, vec3 c0){ float r = (3.0 + 9.0 * smoothE) * tfK(); vec2 px = r / acScreenSize; vec4 mk0 = texture2D(uCut, uv); float acc = mk0.r * mk0.a; float ws = 1.0;
-  for (int i = 0; i < 20; i++) { float f = float(i); float rr = sqrt((f + 0.5) / 20.0); float th = f * 2.39996; vec2 o = vec2(cos(th), sin(th)) * rr * px; vec4 mk = texture2D(uCut, uv + o);
-    vec3 d = tfUn(tfGet(uv + o)) - c0; float w = exp(-rr * rr * 1.5) * mix(1.0, exp(-dot(d, d) * 40.0), refine); acc += mk.r * mk.a * w; ws += w; }
-  return acc / ws; }
-void main(){ vec4 s = tfGet(acScreenNorm); if (uCutOn < 0.5) { gl_FragColor = s; return; } vec3 c = tfUn(s);
-  float m = cutMask(acScreenNorm, c); float e = edge + shrink * 0.25; float a = smoothstep(e - soft - 1e-4, e + soft, m); if (invert) a = 1.0 - a;
-  // Edge pixels still carry some background colour; pull them toward the colour just inside the person.
-  if (despill > 0.001 && a > 0.01 && a < 0.99 && !invert) { vec2 px = 6.0 * tfK() / acScreenSize; vec2 g = vec2(texture2D(uCut, acScreenNorm + vec2(px.x, 0.0)).r - texture2D(uCut, acScreenNorm - vec2(px.x, 0.0)).r, texture2D(uCut, acScreenNorm + vec2(0.0, px.y)).r - texture2D(uCut, acScreenNorm - vec2(0.0, px.y)).r);
-    if (dot(g, g) > 1e-5) { vec3 inner = tfUn(tfGet(acScreenNorm + normalize(g) * px * 1.5)); c = mix(c, inner, despill * (1.0 - a) * 0.8); } }
-  float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }`);
-
 FX_HOOKS['tf.retouch'] = async (layer, fxi, vals, t, R, list) => FaceAI.uniforms(layer, t, list);
 FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
   const m = Media.items.get(layer.mediaId), r = Runtime.get(layer); if (!m || !FaceAI.seg || (layer.type !== 'video' && layer.type !== 'image')) return { uCutOn: 0 };
-  const src = layer.type === 'video' ? r.video : m.image; if (!src || (layer.type === 'video' && src.readyState < 2)) return { uCutOn: 0 };
-  const cv = FaceAI.maskCanvas(src); if (!cv) return { uCutOn: 0 };
+  // The model the effect asks for loads in the background; the one that is ready is used meanwhile.
+  if (fxi && fxi.defId === 'tf.cutout') { const want = vals && vals.model === 1 ? 'fast' : 'detail'; if (FaceAI.segKind !== want && FaceAI.segFell !== want && !FaceAI._segLoad) FaceAI.segmenter(want).then(() => App.requestRender()).catch(() => { }); }
+  let fr = null, img = null;
+  if (layer.type === 'video') { fr = r.lastFr && r.lastFr.tex ? r.lastFr : null; if (!fr) { img = r.video; if (!img || img.readyState < 2) return { uCutOn: 0 }; } } else img = m.image;
+  if (!fr && !img) return { uCutOn: 0 };
+  let cv = null; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, !(vals && vals.zoomIn === false)); } catch (e) { console.warn('person mask failed', e); }
+  if (!cv) return { uCutOn: 0 };
   if (!r.cutTex) r.cutTex = engine.newTex(); engine.upload(r.cutTex, cv);
   const rt = R.R('cut_mask'); engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null);
-  return { uCut: rt, uCutOn: 1 };
+  return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 };
 };
 
 const RETOUCH_PRESETS = {
@@ -12143,12 +12403,13 @@ const FrameSource = {
       const mdhd = find(md, 'mdhd'), ts = d.getUint8(mdhd.a) === 1 ? u32(d, mdhd.a + 20) : u32(d, mdhd.a + 12);
       const tkhd = find(tk, 'tkhd'); let rot = 0; if (tkhd) { const mo = tkhd.a + (d.getUint8(tkhd.a) === 1 ? 52 : 40); rot = Math.atan2(d.getInt32(mo + 4) / 65536, d.getInt32(mo) / 65536); }
       const stbl = find(kids(d, find(md, 'minf').a, find(md, 'minf').b), 'stbl'), sb = kids(d, stbl.a, stbl.b);
-      const stsd = find(sb, 'stsd'), ent = stsd.a + 8, fmt = str(d, ent + 4), cw = d.getUint16(ent + 32), ch = d.getUint16(ent + 34);
+      const stsd = find(sb, 'stsd'), ent = stsd.a + 8; let fmt = str(d, ent + 4); const cw = d.getUint16(ent + 32), ch = d.getUint16(ent + 34);
       const boxes = kids(d, ent + 86, ent + u32(d, ent)); let codec, desc;
       const bytes = (x) => new Uint8Array(d.buffer.slice(d.byteOffset + x.a, d.byteOffset + x.b)), hex = (n) => n.toString(16).padStart(2, '0');
       if (fmt === 'avc1' || fmt === 'avc3') { const c = find(boxes, 'avcC'); if (!c) throw new Error('no avcC'); desc = bytes(c); codec = 'avc1.' + hex(desc[1]) + hex(desc[2]) + hex(desc[3]); }
-      else if (fmt === 'hvc1' || fmt === 'hev1') {
-        const c = find(boxes, 'hvcC'); if (!c) throw new Error('no hvcC'); desc = bytes(c);
+      else if (fmt === 'hvc1' || fmt === 'hev1' || fmt === 'dvh1' || fmt === 'dvhe') {
+        // Dolby Vision clips from phones carry ordinary HEVC underneath.
+        const c = find(boxes, 'hvcC'); if (!c) throw new Error('no hvcC'); desc = bytes(c); if (fmt === 'dvh1') fmt = 'hvc1'; if (fmt === 'dvhe') fmt = 'hev1';
         const space = ['', 'A', 'B', 'C'][desc[1] >> 6], tier = (desc[1] >> 5) & 1, prof = desc[1] & 31; let compat = 0; const cf = (desc[2] << 24 | desc[3] << 16 | desc[4] << 8 | desc[5]) >>> 0; for (let i = 0; i < 32; i++) compat |= ((cf >>> i) & 1) << (31 - i);
         const cons = Array.from(desc.slice(6, 12)); while (cons.length && cons[cons.length - 1] === 0) cons.pop();
         codec = `${fmt}.${space}${prof}.${(compat >>> 0).toString(16)}.${tier ? 'H' : 'L'}${desc[12]}` + (cons.length ? '.' + cons.map(x => x.toString(16)).join('.') : '');
@@ -13322,7 +13583,7 @@ Object.assign(UI, {
   acknowledgements() {
     const items = [
       ['mp4-muxer', 'MIT licence. Copyright Vanilagy. Writes the exported MP4 files.'],
-      ['MediaPipe Tasks Vision, Face Landmarker and Selfie Segmenter models', 'Apache License 2.0. Copyright Google LLC. Used by Retouch and the person tools; downloaded the first time one is opened.'],
+      ['MediaPipe Tasks Vision, Face Landmarker, Selfie Segmenter and Selfie Multiclass models', 'Apache License 2.0. Copyright Google LLC. Used by Retouch, Remove Background and the person tools; downloaded the first time one is opened.'],
       ['Transformers.js', 'Apache License 2.0. Copyright Hugging Face. Runs the caption model on the device.'],
       ['Whisper speech models (tiny, base, small)', 'MIT licence. Copyright OpenAI. Downloaded the first time Captions is used.'],
       ['FidelityFX Super Resolution 1 (edge-adaptive upscaling and sharpening method)', 'MIT licence. Copyright Advanced Micro Devices, Inc. The shaders in Smart upscaling follow this published method.'],
@@ -13606,9 +13867,24 @@ Object.assign(App, {
   const search = UI.searchAll, clipTools = UI.clipTools, openTool = UI.openTool;
   const removeBg = async () => { const l = App.layer() || UI.pickUnder(['video', 'image']); if (!l || (l.type !== 'video' && l.type !== 'image')) { toast('Select a video or photo first.'); return; }
     try { UI.busy && UI.busy('Loading the background model…'); await FaceAI.segmenter(); UI.busy && UI.busy(null); } catch (e) { UI.busy && UI.busy(null); UI.modal('Remove background', el('p', {}, e.message || String(e)), [['OK', () => UI.closeModal()]]); return; }
-    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx'); toast('Background removed. Use Follow the Outline and Smooth the Edge to tune the edge.', 5000); };
-  const SMART = { removeBg, relightTool: () => App.smartEffect('tf.relight', ['lx', 'ly']), eraserTool: () => App.smartEffect('tf.eraser', ['cx', 'cy']), voiceEnh: () => App.voiceTool('enhance'), voiceIso: () => App.voiceTool('isolate') };
-  UI.clipTools = function (l) { const t = clipTools.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) t.push(['removeBg', 'Remove BG', 'mask'], ['relightTool', 'Relight', 'looks'], ['eraserTool', 'Eraser', 'mask']); if (l && (l.type === 'video' || l.type === 'audio')) t.push(['voiceEnh', 'Enhance voice', 'sound'], ['voiceIso', 'Isolate voice', 'volume']); return t; };
+    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx'); toast(FaceAI.segKind === 'fast' ? 'Background removed with the small model (the detailed one did not load).' : 'Background removed. Trim the Edge and Edge Softness fine-tune the outline.', 5000); };
+  // Extract Audio: the sound of a clip as its own clip on the timeline, or as a file.
+  const clipSound = async (l) => { const m = l && Media.items.get(l.mediaId); if (!m) return null; if (!m.audio && m.audioReady) { UI.busy && UI.busy('Reading the sound…'); try { await m.audioReady; } catch (e) { } UI.busy && UI.busy(null); } return m; };
+  const wavOf = (buf, from, to) => { const a = Math.max(0, Math.floor(from * buf.sampleRate)), b = Math.min(buf.length, Math.ceil(to * buf.sampleRate)), n = Math.max(0, b - a), ch = Math.min(2, buf.numberOfChannels), out = new DataView(new ArrayBuffer(44 + n * ch * 2)), ws = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+    ws(0, 'RIFF'); out.setUint32(4, 36 + n * ch * 2, true); ws(8, 'WAVEfmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, ch, true); out.setUint32(24, buf.sampleRate, true); out.setUint32(28, buf.sampleRate * ch * 2, true); out.setUint16(32, ch * 2, true); out.setUint16(34, 16, true); ws(36, 'data'); out.setUint32(40, n * ch * 2, true);
+    const cd = []; for (let c = 0; c < ch; c++) cd.push(buf.getChannelData(c)); for (let i = 0, o = 44; i < n; i++) for (let c = 0; c < ch; c++, o += 2) out.setInt16(o, Math.max(-1, Math.min(1, cd[c][a + i])) * 32767, true);
+    return new Blob([out.buffer], { type: 'audio/wav' }); };
+  const noSound = (m) => m && m.noAudioTrack ? 'This video has no sound track.' : m && m.audioSkipped ? 'The sound of this file couldn’t be read' + (m.audioWhy ? ' (' + m.audioWhy + ').' : '.') : 'This clip has no sound.';
+  App.saveClipAudio = async function (whole) { const l = this.layer(), m = await clipSound(l); if (!m || !m.audio) { toast(noSound(m), 5000); return false; }
+    const sp = (l.video ? l.video.speed : l.audioOpts && l.audioOpts.speed) || 1, from = whole ? 0 : (l.in || 0), to = whole ? m.audio.duration : Math.min(m.audio.duration, from + l.dur * sp);
+    const name = (m.name || 'audio').replace(/\.[^.]+$/, '') + (whole ? '' : ' (clip)') + '.wav'; const r = await saveBlob(wavOf(m.audio, from, to), name); if (r !== 'cancelled') toast('Sound saved as ' + name + '.', 4000); return true; };
+  const extractAudio = async () => { const l = App.layer() || UI.pickUnder(['video', 'audio']); if (!l || (l.type !== 'video' && l.type !== 'audio')) { toast('Select a video clip first.'); return; }
+    App.sel = l.id; App.selIds = new Set([l.id]); const m = await clipSound(l); if (!m || !m.audio) { UI.modal('Extract audio', el('p', {}, noSound(m)), [['OK', () => UI.closeModal()]]); return; }
+    const rows = []; if (l.type === 'video') rows.push(el('button', { class: 'btn primary', onclick: () => { UI.closeModal(); App.extractAudio(); } }, 'Move the sound to its own clip'), el('p', { class: 'hint' }, 'The sound goes on an audio track under the video, and the video clip is muted. You can then cut, move or delete it on its own.'));
+    rows.push(el('button', { class: 'btn', onclick: () => { UI.closeModal(); App.saveClipAudio(false); } }, 'Save this clip’s sound as a file'), el('button', { class: 'btn', onclick: () => { UI.closeModal(); App.saveClipAudio(true); } }, 'Save the whole file’s sound'), el('p', { class: 'hint' }, 'Files are saved as WAV, which every app opens.'));
+    UI.modal('Extract audio', el('div', { class: 'col', style: 'display:flex;flex-direction:column;gap:8px' }, rows), [['Cancel', () => UI.closeModal()]]); };
+  const SMART = { extractAudio, removeBg, relightTool: () => App.smartEffect('tf.relight', ['lx', 'ly']), eraserTool: () => App.smartEffect('tf.eraser', ['cx', 'cy']), voiceEnh: () => App.voiceTool('enhance'), voiceIso: () => App.voiceTool('isolate') };
+  UI.clipTools = function (l) { const t = clipTools.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) t.push(['removeBg', 'Remove BG', 'mask'], ['relightTool', 'Relight', 'looks'], ['eraserTool', 'Eraser', 'mask']); if (l && (l.type === 'video' || l.type === 'audio')) t.push(['extractAudio', 'Extract audio', 'sound'], ['voiceEnh', 'Enhance voice', 'sound'], ['voiceIso', 'Isolate voice', 'volume']); return t; };
   UI.openTool = function (id) { if (SMART[id]) return SMART[id](); return openTool.call(this, id); };
 })();
 
@@ -13844,6 +14120,58 @@ if (typeof LOOKS !== 'undefined') LOOKS.push(
   ['Relief Print', ['#1a120b', '#efe2c6'], 0, [['tf.woodcut', {}]]],
   ['Starlight', ['#0b1030', '#fff3c4'], 0, [['tf.starfilter', { amount: 1.3 }], ['tf.bloompro', { intensity: 0.6 }]]],
   ['Rift', ['#2a0a5e', '#39e1ff'], 0, [['tf.rift', {}]]]);
+
+// ---------------------------------------------------------------------------
+// Remove Background. The person model gives a small, rough mask. A guided
+// filter (He, Sun and Tang, 2010; the method is public, this code is ours)
+// then fits that mask to the colours of the real picture: around every pixel it
+// finds the straight-line rule "mask = a . colour + b" that best explains the
+// rough mask, and applies that rule to the full-size picture. Edges land on
+// the real outline, and hair keeps a soft, partly see-through edge.
+// ---------------------------------------------------------------------------
+{
+  const CUT_LOW = (u, w, h) => { const k = Math.min(1, 480 / Math.max(w, h)); return [w * k, h * k]; };
+  fxm('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Loads a model the first time.', [
+    L('model', 'Model', 0, ['Detailed (hair and clothes)', 'Fast']), B('zoomIn', 'Look Closer at the Person', true),
+    S('refine', 'Follow the Outline', 0.75, 0, 1), S('smoothE', 'Outline Search Width', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('shrink', 'Trim the Edge', 0.1, 0, 1), S('despill', 'Clean Edge Colour', 0.6, 0, 1),
+    B('invert', 'Keep the Background Instead', false), B('showmask', 'Show the Mask', false)
+  ], [
+    { scale: 0.5, body: `void main(){ gl_FragColor = tfGet(vUv); }` },
+    { size: CUT_LOW, save: 'a', body: `uniform sampler2D uCut; uniform float uCutOn;
+void main(){ vec4 s = tfGet(vUv); vec4 mk = texture2D(uCut, vUv); gl_FragColor = vec4(tfUn(s), mk.r * mk.a * step(0.5, uCutOn)); }` },
+    { size: CUT_LOW, float: true, body: `
+void main(){ vec2 px = (0.7 + 1.1 * smoothE) / acScreenSize; vec3 mI = vec3(0.0); float mp = 0.0; vec3 mIp = vec3(0.0); vec3 d1 = vec3(0.0); vec3 d2 = vec3(0.0);
+  for (int y = -4; y <= 4; y++) { for (int x = -4; x <= 4; x++) { vec4 s = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); vec3 I = s.rgb; mI += I; mp += s.a; mIp += I * s.a; d1 += I * I; d2 += vec3(I.r * I.g, I.r * I.b, I.g * I.b); } }
+  mI /= 81.0; mp /= 81.0; mIp /= 81.0; d1 /= 81.0; d2 /= 81.0;
+  float eps = mix(0.012, 0.0006, refine); vec3 cv = mIp - mI * mp;
+  float rr = d1.r - mI.r * mI.r + eps; float gg = d1.g - mI.g * mI.g + eps; float bb = d1.b - mI.b * mI.b + eps; float rg = d2.x - mI.r * mI.g; float rb = d2.y - mI.r * mI.b; float gb = d2.z - mI.g * mI.b;
+  vec3 c0 = vec3(gg * bb - gb * gb, rb * gb - rg * bb, rg * gb - rb * gg); float det = rr * c0.x + rg * c0.y + rb * c0.z;
+  vec3 c1 = vec3(c0.y, rr * bb - rb * rb, rg * rb - rr * gb); vec3 c2 = vec3(c0.z, c1.z, rr * gg - rg * rg);
+  vec3 a = vec3(dot(c0, cv), dot(c1, cv), dot(c2, cv)) / max(det, 1e-12);
+  gl_FragColor = vec4(a, mp - dot(a, mI)); }` },
+    { size: CUT_LOW, float: true, save: 'b', body: `
+void main(){ vec2 px = (0.7 + 1.1 * smoothE) * 2.0 / acScreenSize; vec4 s = vec4(0.0);
+  for (int y = -2; y <= 2; y++) { for (int x = -2; x <= 2; x++) { s += texture2D(inputImg.texture, vUv + vec2(float(x), float(y)) * px); } }
+  gl_FragColor = s / 25.0; }` },
+    { body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutFloat;
+float lowM(vec2 uv){ return texture2D(bufA.texture, uv).a; }
+void main(){ vec4 s = oGet(vUv); if (uCutOn < 0.5) { gl_FragColor = s; return; } vec3 c = tfUn(s);
+  float raw = lowM(vUv); float q = raw;
+  if (uCutFloat > 0.5) { vec4 ab = texture2D(bufB.texture, vUv); q = clamp(dot(ab.rgb, c) + ab.a, 0.0, 1.0);
+    // Far from any edge the model's answer is kept as it is, so nothing inside the person turns see-through.
+    q = mix(q, raw, smoothstep(0.94, 1.0, raw) * 0.85); q = mix(q, raw, (1.0 - smoothstep(0.0, 0.04, raw)) * 0.85); }
+  float e = edge + shrink * 0.3; float a = smoothstep(e - soft, e + soft, q);
+  // Edge pixels still carry background colour. Take the colour from a little further inside the person.
+  if (despill > 0.001 && a > 0.01 && a < 0.985) { vec2 px = 5.0 / (acScreenSize * min(1.0, 480.0 / max(acScreenSize.x, acScreenSize.y)));
+    vec2 g = vec2(lowM(vUv + vec2(px.x, 0.0)) - lowM(vUv - vec2(px.x, 0.0)), lowM(vUv + vec2(0.0, px.y)) - lowM(vUv - vec2(0.0, px.y)));
+    if (dot(g, g) > 1e-6) { vec2 dir = normalize(g) * px; vec3 inner = tfUn(oGet(vUv + dir * 0.9)) * 0.5 + tfUn(oGet(vUv + dir * 1.8)) * 0.5; c = mix(c, inner, despill * (1.0 - a) * 0.85); } }
+  if (invert) { a = 1.0 - a; c = tfUn(s); }
+  float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }` }
+  ]);
+  const d = EffectLib.get('tf.cutout'); if (d) { d.pro = false; d.tags = 'keying,background,remove,person,cutout'; }
+  // The frame a video layer was last drawn with, for effects that must look at the very same picture.
+  const vf = Renderer.videoFrame; Renderer.videoFrame = async function (layer) { const fr = await vf.apply(this, arguments); try { Runtime.get(layer).lastFr = fr; } catch (e) { } return fr; };
+}
 
 </script>
 <script>
