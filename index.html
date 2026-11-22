@@ -11609,7 +11609,9 @@ const FaceAI = {
       const ms = res.confidenceMasks, mk = ms[ms.length > 1 ? 1 : 0], w = mk.width, h = mk.height, a = mk.getAsFloat32Array();
       const cv = this._mc || (this._mc = document.createElement('canvas')); cv.width = w; cv.height = h; const ctx = cv.getContext('2d'), id = ctx.createImageData(w, h);
       for (let i = 0; i < a.length; i++) { const v = Math.round(a[i] * 255); id.data[i * 4] = v; id.data[i * 4 + 1] = v; id.data[i * 4 + 2] = v; id.data[i * 4 + 3] = 255; }
-      ctx.putImageData(id, 0, 0); out = cv;
+      ctx.putImageData(id, 0, 0);
+      // Soften the stair-steps of the small mask, and steady it against the frame before so the edge doesn't flicker.
+      const sm = this._ms || (this._ms = document.createElement('canvas')); const fresh = sm.width !== w * 2 || sm.height !== h * 2 || performance.now() - (this._mts || 0) > 250; if (fresh) { sm.width = w * 2; sm.height = h * 2; } const sx = sm.getContext('2d'); sx.imageSmoothingEnabled = true; sx.imageSmoothingQuality = 'high'; try { sx.filter = 'blur(1.2px)'; } catch (e) { } sx.globalAlpha = fresh ? 1 : 0.65; sx.drawImage(cv, 0, 0, sm.width, sm.height); sx.globalAlpha = 1; this._mts = performance.now(); out = sm;
     });
     return out;
   }
@@ -11661,10 +11663,21 @@ void main(){ vec2 uv = acScreenNorm; float asp = xAsp(); vec4 orig = tfGet(uv); 
   c3 = mix(c3, c3 * 0.6 + blushcol.rgb * 0.5, blush * cheek * sk * 0.6);
   vec4 o = xOut(c3, s.a); if (compare > 0.001) { if (uv.x < compare) o = orig; if (abs(uv.x - compare) < 0.0015) o = vec4(1.0); }
   gl_FragColor = o; }`);
-fx3('cutout', 'Person Cutout', 'Keying', 'Removes the background behind people (no green screen needed). Loads a small model the first time.', [S('edge', 'Edge Position', 0.5, 0.05, 0.95), S('soft', 'Edge Softness', 0.12, 0, 0.5), B('invert', 'Keep the Background Instead', false), B('showmask', 'Show the Mask', false)], `
+fx3('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Loads a small model the first time.', [S('edge', 'Edge Position', 0.5, 0.05, 0.95), S('soft', 'Edge Softness', 0.12, 0, 0.5), S('refine', 'Follow the Outline', 0.7, 0, 1), S('smoothE', 'Smooth the Edge', 0.6, 0, 1), S('shrink', 'Trim the Edge', 0.15, 0, 1), S('despill', 'Clean Edge Colour', 0.5, 0, 1), B('invert', 'Keep the Background Instead', false), B('showmask', 'Show the Mask', false)], `
 uniform sampler2D uCut; uniform float uCutOn;
-void main(){ vec4 s = tfGet(acScreenNorm); if (uCutOn < 0.5) { gl_FragColor = s; return; } vec4 mk = texture2D(uCut, acScreenNorm); float a = smoothstep(edge - soft - 1e-4, edge + soft, mk.r) * mk.a; if (invert) a = 1.0 - a;
-  gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : s * a; }`);
+// The model's mask is small and blocky. It is smoothed here, and each
+// neighbour counts more when its colour matches this pixel, so the edge
+// settles on the real outline of the person instead of on the mask's steps.
+float cutMask(vec2 uv, vec3 c0){ float r = (3.0 + 9.0 * smoothE) * tfK(); vec2 px = r / acScreenSize; vec4 mk0 = texture2D(uCut, uv); float acc = mk0.r * mk0.a; float ws = 1.0;
+  for (int i = 0; i < 20; i++) { float f = float(i); float rr = sqrt((f + 0.5) / 20.0); float th = f * 2.39996; vec2 o = vec2(cos(th), sin(th)) * rr * px; vec4 mk = texture2D(uCut, uv + o);
+    vec3 d = tfUn(tfGet(uv + o)) - c0; float w = exp(-rr * rr * 1.5) * mix(1.0, exp(-dot(d, d) * 40.0), refine); acc += mk.r * mk.a * w; ws += w; }
+  return acc / ws; }
+void main(){ vec4 s = tfGet(acScreenNorm); if (uCutOn < 0.5) { gl_FragColor = s; return; } vec3 c = tfUn(s);
+  float m = cutMask(acScreenNorm, c); float e = edge + shrink * 0.25; float a = smoothstep(e - soft - 1e-4, e + soft, m); if (invert) a = 1.0 - a;
+  // Edge pixels still carry some background colour; pull them toward the colour just inside the person.
+  if (despill > 0.001 && a > 0.01 && a < 0.99 && !invert) { vec2 px = 6.0 * tfK() / acScreenSize; vec2 g = vec2(texture2D(uCut, acScreenNorm + vec2(px.x, 0.0)).r - texture2D(uCut, acScreenNorm - vec2(px.x, 0.0)).r, texture2D(uCut, acScreenNorm + vec2(0.0, px.y)).r - texture2D(uCut, acScreenNorm - vec2(0.0, px.y)).r);
+    if (dot(g, g) > 1e-5) { vec3 inner = tfUn(tfGet(acScreenNorm + normalize(g) * px * 1.5)); c = mix(c, inner, despill * (1.0 - a) * 0.8); } }
+  float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }`);
 
 FX_HOOKS['tf.retouch'] = async (layer, fxi, vals, t, R, list) => FaceAI.uniforms(layer, t, list);
 FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
@@ -11698,7 +11711,7 @@ Object.assign(UI, {
     body.append(el('p', { class: 'hint' }, rec ? `Faces are saved for ${Object.keys(rec.frames).length} frame${Object.keys(rec.frames).length === 1 ? '' : 's'} of this clip (up to ${Math.max(0, ...Object.values(rec.frames).map(f => f.length))} people).` : 'Step 1: find the faces. This runs on your device and is saved with the clip, so it only happens once.'),
       el('div', { class: 'btnrow' }, el('button', { class: 'btn' + (rec ? '' : ' primary'), onclick: () => run(phone ? 2 : 1) }, rec ? 'Analyze again' : 'Analyze faces'),
         l.type === 'video' ? el('button', { class: 'btn sm', onclick: () => run(phone ? 1 : 2) }, phone ? 'Every frame (slower, more exact)' : 'Every 2nd frame (faster)') : null,
-        el('button', { class: 'btn sm', onclick: async () => { try { this.busy('Loading the cutout model…'); await FaceAI.segmenter(); this.busy(null); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); this.refresh(); toast('Background removed. Adjust the edge under Effects.'); } catch (e) { this.busy(null); this.modal('Person cutout', el('p', {}, e.message || String(e)), [['OK', () => this.closeModal()]]); } } }, 'Remove background')));
+        null));
     if (!fx) { if (rec) body.appendChild(el('div', { class: 'btnrow' }, el('button', { class: 'btn primary', onclick: () => { App.addEffect('tf.retouch'); this.refresh(); } }, 'Add retouch'))); return; }
     const def = EffectLib.get('tf.retouch'), mine = this.myRetouch(), apply = (vals) => { App._label = 'Retouch preset'; App.change(() => { for (const p of def.params) if (p.id && p.kind === 'spinner' && p.id !== 'compare') fx.params[p.id] = vals[p.id] ?? (['smoothamt', 'detail', 'bright', 'shine', 'circles', 'eyebright', 'teeth'].includes(p.id) ? fx.params[p.id] : 0); }); this.refreshPanel(); };
     const hold = el('button', { class: 'btn sm' }, 'Hold to see before');
@@ -13591,8 +13604,11 @@ Object.assign(App, {
 });
 (() => {
   const search = UI.searchAll, clipTools = UI.clipTools, openTool = UI.openTool;
-  const SMART = { relightTool: () => App.smartEffect('tf.relight', ['lx', 'ly']), eraserTool: () => App.smartEffect('tf.eraser', ['cx', 'cy']), voiceEnh: () => App.voiceTool('enhance'), voiceIso: () => App.voiceTool('isolate') };
-  UI.clipTools = function (l) { const t = clipTools.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) t.push(['relightTool', 'Relight', 'looks'], ['eraserTool', 'Eraser', 'mask']); if (l && (l.type === 'video' || l.type === 'audio')) t.push(['voiceEnh', 'Enhance voice', 'sound'], ['voiceIso', 'Isolate voice', 'volume']); return t; };
+  const removeBg = async () => { const l = App.layer() || UI.pickUnder(['video', 'image']); if (!l || (l.type !== 'video' && l.type !== 'image')) { toast('Select a video or photo first.'); return; }
+    try { UI.busy && UI.busy('Loading the background model…'); await FaceAI.segmenter(); UI.busy && UI.busy(null); } catch (e) { UI.busy && UI.busy(null); UI.modal('Remove background', el('p', {}, e.message || String(e)), [['OK', () => UI.closeModal()]]); return; }
+    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx'); toast('Background removed. Use Follow the Outline and Smooth the Edge to tune the edge.', 5000); };
+  const SMART = { removeBg, relightTool: () => App.smartEffect('tf.relight', ['lx', 'ly']), eraserTool: () => App.smartEffect('tf.eraser', ['cx', 'cy']), voiceEnh: () => App.voiceTool('enhance'), voiceIso: () => App.voiceTool('isolate') };
+  UI.clipTools = function (l) { const t = clipTools.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) t.push(['removeBg', 'Remove BG', 'mask'], ['relightTool', 'Relight', 'looks'], ['eraserTool', 'Eraser', 'mask']); if (l && (l.type === 'video' || l.type === 'audio')) t.push(['voiceEnh', 'Enhance voice', 'sound'], ['voiceIso', 'Isolate voice', 'volume']); return t; };
   UI.openTool = function (id) { if (SMART[id]) return SMART[id](); return openTool.call(this, id); };
 })();
 
