@@ -6436,7 +6436,7 @@ const Renderer = {
       // Effects that need more than their sliders (face data, a cutout mask)
       // register a hook that returns extra shader values.
       const hook = FX_HOOKS[def.id];
-      if (hook) { let r = null; try { r = await hook(layer, fxi, vals, t, this, list || this.project.layers); } catch (e) { console.warn(e); } if (r === false) continue; if (r) extra.uniforms = r; }
+      if (hook) { let r = null; try { r = await hook(layer, fxi, vals, t, this, list || this.project.layers, src); } catch (e) { console.warn(e); } if (r === false) continue; if (r) extra.uniforms = r; }
       engine.runEffect(def, vals, src, dst, t + layer.start, extra);
       // Mix: blend the effect's result with the picture before it.
       if (fxi.mix != null && fxi.mix < 0.999) { const m = this.R('fx_mix'); engine.mix(src, dst, clamp(fxi.mix, 0, 1), m); engine.copy(m, dst); }
@@ -7541,7 +7541,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '22 Nov I';
+const TF_BUILD = '22 Nov J';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -12110,7 +12110,7 @@ const FaceAI = {
     if (multi && this.segB) { let S = null;
       try { this.segB.segmentForVideo(input, this.ts, (res) => { const ms = res.confidenceMasks; if (!ms || !ms.length) return; const m = ms[ms.length === 2 ? 1 : 0], n = W * H, a = m.getAsFloat32Array(); S = buf('s', n);
         if (m.width === W && m.height === H) S.set(a.subarray(0, n)); else { const w2 = m.width, h2 = m.height; for (let y = 0, i = 0; y < H; y++) { const yy = Math.min(h2 - 1, (y * h2 / H) | 0) * w2; for (let x = 0; x < W; x++, i++) S[i] = a[yy + Math.min(w2 - 1, (x * w2 / W) | 0)]; } } }); } catch (e) { S = null; }
-      if (S) fuseMasks(P, ACC, S, W * H);
+      if (S) z.fuse = fuseMasks(P, ACC, S, W, H); else z.fuse = 'alone';
     }
     cleanMask(P, W, H);
     {
@@ -12200,38 +12200,63 @@ void main(){ vec2 uv = acScreenNorm; float asp = xAsp(); vec4 orig = tfGet(uv); 
   vec4 o = xOut(c3, s.a); if (compare > 0.001) { if (uv.x < compare) o = orig; if (abs(uv.x - compare) < 0.0015) o = vec4(1.0); }
   gl_FragColor = o; }`);
 FX_HOOKS['tf.retouch'] = async (layer, fxi, vals, t, R, list) => FaceAI.uniforms(layer, t, list);
-// Two person models, one answer. `P` holds the detailed model's "not background", `ACC` its
-// "bags, hats and other things" class, `S` the small model's person mask. Things are only kept where
-// the small model sees a person too, and nothing survives where the small model is sure there is nobody.
-function fuseMasks(P, ACC, S, n) {
-  const st = (x, lo, hi) => { const t = x <= lo ? 0 : x >= hi ? 1 : (x - lo) / (hi - lo); return t * t * (3 - 2 * t); };
-  const F = fuseMasks.f && fuseMasks.f.length === n ? fuseMasks.f : (fuseMasks.f = new Float32Array(n)); let cp = 0, cs = 0;
-  for (let i = 0; i < n; i++) { const s = S[i]; let p = P[i]; if (ACC) p -= ACC[i] * (1 - st(s, 0.15, 0.5)); p = (p < 0 ? 0 : p > 1 ? 1 : p) * st(s, 0.02, 0.3); F[i] = p; if (p > 0.5) cp++; if (s > 0.5) cs++; }
-  // The detailed model found (almost) nobody where the small one sees a person: the small one decides.
-  if (cp < 0.35 * cs) P.set(S.subarray(0, n)); else P.set(F);
+// Distance to the nearest pixel that holds 0, in place (3 for a step, 4 for a diagonal one; other pixels start at 60000).
+function chamfer(D, W, H) {
+  const n = W * H;
+  for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) { let d = D[i]; if (!d) continue; if (x > 0 && D[i - 1] + 3 < d) d = D[i - 1] + 3; if (y > 0) { if (D[i - W] + 3 < d) d = D[i - W] + 3; if (x > 0 && D[i - W - 1] + 4 < d) d = D[i - W - 1] + 4; if (x < W - 1 && D[i - W + 1] + 4 < d) d = D[i - W + 1] + 4; } D[i] = d; }
+  for (let y = H - 1, i = n - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--, i--) { let d = D[i]; if (!d) continue; if (x < W - 1 && D[i + 1] + 3 < d) d = D[i + 1] + 3; if (y < H - 1) { if (D[i + W] + 3 < d) d = D[i + W] + 3; if (x < W - 1 && D[i + W + 1] + 4 < d) d = D[i + W + 1] + 4; if (x > 0 && D[i + W - 1] + 4 < d) d = D[i + W - 1] + 4; } D[i] = d; }
 }
-// Loose bits are removed: small separate areas, and soft patches that are not right next to a sure part of the person.
+// Two person models, one answer. `P` holds the detailed model's "not background", `ACC` its
+// "bags, hats and other things" class, `S` the small model's person mask.
+// The detailed model keeps its outline (it is the better one for hair). The small model is only used to throw
+// things out: objects it does not see as part of a person, and anything far away from every person it sees.
+// If the two do not even agree on the person, the small model is not used for this frame.
+function fuseMasks(P, ACC, S, W, H) {
+  const n = W * H, st = (x, lo, hi) => { const t = x <= lo ? 0 : x >= hi ? 1 : (x - lo) / (hi - lo); return t * t * (3 - 2 * t); };
+  let nc = 0, sup = 0, cp = 0, cs = 0;
+  for (let i = 0; i < n; i++) { const p = P[i], s = S[i]; if (p > 0.5) cp++; if (s > 0.5) cs++; if (p > 0.8 && (!ACC || ACC[i] < 0.2)) { nc++; sup += s; } }
+  // The detailed model found nobody where the small one clearly sees a person: the small one decides.
+  if (nc < 60) { if (cs > 4 * cp + 150) P.set(S.subarray(0, n)); return 'small'; }
+  if (sup / nc <= 0.5) return 'alone';
+  const F = fuseMasks; if (!F.a || F.a.length !== n) { F.a = new Float32Array(n); F.b = new Float32Array(n); F.d = new Uint16Array(n); }
+  const A = F.a, B = F.b, D = F.d;
+  if (ACC) {
+    // The small model's mask grown by two pixels and smoothed, so its tighter outline and its noise do not cut into hats, bags or sleeves.
+    for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) { let m = S[i]; for (let k = -2; k <= 2; k++) { const xx = x + k; if (xx >= 0 && xx < W && S[i + k] > m) m = S[i + k]; } A[i] = m; }
+    for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) { let m = A[i]; for (let k = -2; k <= 2; k++) { const yy = y + k; if (yy >= 0 && yy < H && A[i + k * W] > m) m = A[i + k * W]; } B[i] = m; }
+    for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) A[i] = (B[x > 0 ? i - 1 : i] + B[i] + B[x < W - 1 ? i + 1 : i]) / 3;
+    for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) { const g = (A[y > 0 ? i - W : i] + A[i] + A[y < H - 1 ? i + W : i]) / 3, p = P[i] - ACC[i] * (1 - st(g, 0.25, 0.6)); P[i] = p < 0 ? 0 : p > 1 ? 1 : p; }
+  }
+  let any = false; for (let i = 0; i < n; i++) { if (S[i] > 0.2) { D[i] = 0; any = true; } else D[i] = 60000; }
+  if (any) { chamfer(D, W, H); for (let i = 0; i < n; i++) { const d = D[i] / 3; if (d > 9) P[i] *= 1 - st(d, 9, 13); } }
+  return 'both';
+}
+// Small separate areas are removed (with their soft rim). The outline of what stays is not touched.
 function cleanMask(P, W, H) {
-  const n = W * H, C = cleanMask; if (!C.lab || C.lab.length !== n) { C.lab = new Int32Array(n); C.st = new Int32Array(n); C.d = new Uint16Array(n); }
-  const lab = C.lab, stack = C.st, D = C.d; lab.fill(0); const area = [0]; let best = 0;
+  const n = W * H, C = cleanMask; if (!C.lab || C.lab.length !== n) { C.lab = new Int32Array(n); C.st = new Int32Array(n); C.d = new Uint16Array(n); C.k = new Uint16Array(n); }
+  const lab = C.lab, stack = C.st, Dd = C.d, Dk = C.k; lab.fill(0); const area = [0]; let best = 0;
   for (let i = 0; i < n; i++) { if (lab[i] || !(P[i] > 0.5)) continue; const id = area.length; let sp = 0, a = 0; stack[sp++] = i; lab[i] = id;
     while (sp) { const j = stack[--sp], x = j % W, y = (j - x) / W; a++;
       for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= H) continue; for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= W) continue; const k = yy * W + xx; if (!lab[k] && P[k] > 0.5) { lab[k] = id; stack[sp++] = k; } } } }
     area.push(a); if (a > best) best = a; }
-  if (!best) return;
-  const BIG = 60000; let any = false;
-  for (let i = 0; i < n; i++) { const L = lab[i]; if (L && P[i] > 0.6 && area[L] >= 0.03 * best) { D[i] = 0; any = true; } else D[i] = BIG; }
-  if (!any) return;
-  // Distance to the nearest sure pixel (3 for a step, 4 for a diagonal one).
-  for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) { let d = D[i]; if (!d) continue; if (x > 0 && D[i - 1] + 3 < d) d = D[i - 1] + 3; if (y > 0) { if (D[i - W] + 3 < d) d = D[i - W] + 3; if (x > 0 && D[i - W - 1] + 4 < d) d = D[i - W - 1] + 4; if (x < W - 1 && D[i - W + 1] + 4 < d) d = D[i - W + 1] + 4; } D[i] = d; }
-  for (let y = H - 1, i = n - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--, i--) { let d = D[i]; if (!d) continue; if (x < W - 1 && D[i + 1] + 3 < d) d = D[i + 1] + 3; if (y < H - 1) { if (D[i + W] + 3 < d) d = D[i + W] + 3; if (x < W - 1 && D[i + W + 1] + 4 < d) d = D[i + W + 1] + 4; if (x > 0 && D[i + W - 1] + 4 < d) d = D[i + W - 1] + 4; } D[i] = d; }
-  const R = 9, SOFT = 4;
-  for (let i = 0; i < n; i++) { const d = D[i] / 3; if (d > R) { const t = d >= R + SOFT ? 1 : (d - R) / SOFT; P[i] *= 1 - t * t * (3 - 2 * t); } }
+  if (area.length <= 2) return 0;
+  let dropped = 0; for (let i = 0; i < n; i++) { const L = lab[i]; if (!L) { Dd[i] = 60000; Dk[i] = 60000; } else if (area[L] < 0.03 * best) { Dd[i] = 0; Dk[i] = 60000; dropped++; } else { Dd[i] = 60000; Dk[i] = 0; } }
+  if (!dropped) return 0;
+  chamfer(Dd, W, H); chamfer(Dk, W, H);
+  for (let i = 0; i < n; i++) if (Dd[i] <= 12 && Dd[i] < Dk[i]) P[i] = 0;
+  return dropped;
+}
+// While a clip plays, a layer may keep its last picture together with that picture's mask (two layers at most).
+function cutHoldSlot(id) {
+  const C = cutHoldSlot; if (!C.ids) { C.ids = [null, null]; C.gen = [0, 0]; C.at = [0, 0]; }
+  const now = performance.now(); let k = C.ids.indexOf(id);
+  if (k < 0) { k = C.ids[0] == null || now - C.at[0] > 2000 ? 0 : (C.ids[1] == null || now - C.at[1] > 2000 ? 1 : -1); if (k < 0) return -1; C.ids[k] = id; C.gen[k]++; }
+  C.at[k] = now; return k;
 }
 // A matte as a one-channel texture.
 function uploadMatte(tex, bytes, w, h) { const gl = engine.gl; gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, bytes); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); tex._w = w; tex._h = h; }
-FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
+FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list, src) => {
   const m = Media.items.get(layer.mediaId), r = Runtime.get(layer); if (!m || (layer.type !== 'video' && layer.type !== 'image')) return { uCutOn: 0 };
   const playing = R && R.curMode === 'play', zoom = !(vals && vals.zoomIn === false);
   const own = fxi && fxi.defId === 'tf.cutout', want = own && vals && vals.model === 1 ? 'fast' : (own ? 'detail' : (FaceAI.segKind || 'detail'));
@@ -12241,14 +12266,15 @@ FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
   // Masks are remembered per clip, model and setting. A frame that was masked once is never worked out again,
   // so a clip plays smoothly from the second time on (or straight away after "Prepare this clip").
   const kind = FaceAI.segKind && FaceAI.segFell !== want && FaceAI.segKind !== want ? null : (FaceAI.segKind || want), cid = Matte.cid(m.id, kind || want, zoom);
-  let have = false;
+  let have = false, stale = false;
+  const slot = playing && src ? cutHoldSlot(layer.id) : -1;
   if (!tween) {
     let rec = Matte.mem.get(cid); if (!rec || !rec.index) { if (playing) Matte.open(cid); else { await Matte.open(cid); rec = Matte.mem.get(cid); } }
     if (rec && rec.index && Matte.has(cid, i0)) { const key = cid + ':' + i0 + ':' + rec.w;
       if (r.cutKey === key && r.cutTex) have = true;
       else { let a = Matte.get(cid, i0); if (!a && !playing) { await Matte.loadChunk(cid, Math.floor(i0 / Matte.CH)); a = Matte.get(cid, i0); }
         if (a) { if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, a, rec.w, rec.h); r.cutKey = key; have = true; if (playing) Matte.warm(cid, i0 + 8); }
-        else if (playing && r.cutTex) have = true; }     // still being read from storage: keep the last one for this frame
+        else if (playing && r.cutTex) { have = true; stale = true; } }     // still being read from storage: keep the last one for this frame
     }
   }
   if (!have) {
@@ -12258,10 +12284,13 @@ FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
     let fr = null, img = null;
     if (layer.type === 'video') { fr = r.lastFr && r.lastFr.tex ? r.lastFr : null; if (!fr) { img = r.video; if (!img || img.readyState < 2) return { uCutOn: 0 }; } } else img = m.image;
     if (!fr && !img) return { uCutOn: 0 };
-    // While playing, a new mask is made only as often as the device can afford; between those the last one is kept.
+    // While playing, a picture is only ever shown with its own mask. When a new mask would cost too much right now,
+    // the layer keeps the last picture that has one for a moment (a slightly lower frame rate, but a clean outline),
+    // instead of putting an old mask on a new picture.
     const z = FaceAI._cz && FaceAI._cz.get(layer.id), now = performance.now();
-    const reuse = playing && r.cutTex && r.cutAt && z && z.cost > 9 && now - r.cutAt < Math.min(220, z.cost * 3);
-    if (!reuse) {
+    const reuse = playing && r.cutTex && r.cutAt && z && z.cost > 9 && (slot >= 0 ? r.cutHeld === slot + 1 && r.cutGen === cutHoldSlot.gen[slot] && now - r.cutAt < Math.min(100, z.cost * 0.5) : now - r.cutAt < Math.min(220, z.cost * 3));
+    if (reuse) stale = true;
+    else {
       let cv = null, fin = false; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, zoom); let zz = FaceAI._cz.get(layer.id);
         // Paused or exporting: if that was only the first, whole-frame look, look again close up straight away.
         if (cv && zz && !zz.final && !playing) { zz.noBlend = true; const c2 = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, zoom); zz = FaceAI._cz.get(layer.id); if (zz) zz.noBlend = false; if (c2) cv = c2; }
@@ -12272,8 +12301,14 @@ FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
       else if (!r.cutTex) return { uCutOn: 0 };
     }
   }
-  const rt = R.R('cut_mask'); engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null);
-  return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 };
+  const U = (rt) => ({ uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 });
+  const draw = (rt) => { engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null); };
+  if (slot >= 0) {
+    const hm = R.R('cut_hm' + slot), hp = R.R('cut_hp' + slot);
+    if (stale && r.cutHeld === slot + 1 && r.cutGen === cutHoldSlot.gen[slot]) { engine.copy(hp, src); return U(hm); }
+    draw(hm); engine.copy(src, hp); r.cutHeld = slot + 1; r.cutGen = cutHoldSlot.gen[slot]; return U(hm);
+  }
+  r.cutHeld = 0; const rt = R.R('cut_mask'); draw(rt); return U(rt);
 };
 
 const RETOUCH_PRESETS = {
@@ -12371,7 +12406,7 @@ const MATTE_CFG = {
 };
 
 const Matte = {
-  VER: 4, CH: 40,                 // stored in groups of 40 frames
+  VER: 5, CH: 40,                 // stored in groups of 40 frames
   mem: new Map(),                 // media id -> { w, h, frames: Map(index -> packed bytes), have: Set(chunks read), dirty: Set(chunks to write), index: Set(frame numbers on disk) }
   state: new Map(),               // look-closer state per key
   eng: null, baking: false, cancel: false,
