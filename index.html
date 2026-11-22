@@ -7541,7 +7541,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '22 Nov G';
+const TF_BUILD = '22 Nov H';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -7624,7 +7624,7 @@ const Exporter = {
     engine.setSize(W, H, p.width, p.height);
     Runtime.clearCaches();
     const N = Math.max(1, Math.round(p.duration * fps));
-    this.rendering = true; try { if (typeof Matte !== 'undefined') Matte.exportOff = false; } catch (e) { }
+    this.rendering = true;
     let tPic = 0, tEnc = 0; const tAll = performance.now() - 0, tSound = tAll - tStart;
     try {
       for (let i = 0; i < N; i++) {
@@ -12105,8 +12105,8 @@ const FaceAI = {
       const fk = 512 / Math.max(mw, mh), FW = Math.max(16, Math.round(mw * fk)), FH = Math.max(16, Math.round(mh * fk));
       const N = z.n || (z.n = document.createElement('canvas')); if (N.width !== FW || N.height !== FH) { N.width = FW; N.height = FH; } const nx = N.getContext('2d'); nx.imageSmoothingEnabled = true; nx.imageSmoothingQuality = 'high';
       nx.fillStyle = '#000'; nx.fillRect(0, 0, FW, FH); nx.drawImage(cv, B[0] * FW, B[1] * FH, (B[2] - B[0]) * FW, (B[3] - B[1]) * FH);
-      const F = z.f || (z.f = document.createElement('canvas')); const fresh = F.width !== FW || F.height !== FH || now - (z.at || 0) > 250; if (F.width !== FW || F.height !== FH) { F.width = FW; F.height = FH; }
-      const fx = F.getContext('2d'); fx.globalAlpha = fresh ? 1 : 0.8; fx.drawImage(N, 0, 0); fx.globalAlpha = 1; out = F; z.at = now;
+      const F = z.f || (z.f = document.createElement('canvas')); const fresh = z.noBlend || F.width !== FW || F.height !== FH || now - (z.at || 0) > 250; if (F.width !== FW || F.height !== FH) { F.width = FW; F.height = FH; }
+      const fx = F.getContext('2d', { willReadFrequently: true }); fx.globalAlpha = fresh ? 1 : 0.8; fx.drawImage(N, 0, 0); fx.globalAlpha = 1; out = F; z.at = now;
       // Where to look next time: the person's box with room around it.
       if (!found || !zoom) { z.box = null; return; }
       const bw = B[2] - B[0], bh = B[3] - B[1]; let n0 = B[0] + x0 / W * bw, n1 = B[0] + (x1 + 1) / W * bw, m0 = B[1] + y0 / H * bh, m1 = B[1] + (y1 + 1) / H * bh;
@@ -12122,6 +12122,8 @@ const FaceAI = {
     // How long one mask takes on this device (a running average). Playback uses it to decide how often a new mask is affordable.
     { const ms = performance.now() - tm0; z.cost = z.cost ? z.cost * 0.7 + ms * 0.3 : ms; }
     if (again) { z.box = null; return this.maskFor(key, fr, img, mw, mh, zoom, true); }
+    // Final = made from the close-up, or no close-up is possible for this frame. A first, whole-frame look is not final.
+    z.final = boxed || !z.box;
     return out;
   },
   maskCanvas(src) { return this.maskFor('_one', null, src, src.videoWidth || src.naturalWidth || src.width, src.videoHeight || src.naturalHeight || src.height, false); }
@@ -12179,56 +12181,47 @@ function uploadMatte(tex, bytes, w, h) { const gl = engine.gl; gl.bindTexture(gl
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); tex._w = w; tex._h = h; }
 FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list) => {
   const m = Media.items.get(layer.mediaId), r = Runtime.get(layer); if (!m || (layer.type !== 'video' && layer.type !== 'image')) return { uCutOn: 0 };
-  const playing = R && R.curMode === 'play', exporting = typeof Exporter !== 'undefined' && Exporter.rendering && !Matte.baking;
-  const f = layer.type === 'video' ? (r.lastSrcF != null ? r.lastSrcF : 0) : 0, i0 = Math.max(0, Math.floor(f + 1e-4)), frac = f - i0;
-  let hq = false; const tween = layer.type === 'video' && layer.video && layer.video.interp && layer.video.interp !== 'none' && !playing && layer.video.freeze == null;
-  // 1. A matte from the analysis: nothing to compute, just look it up.
-  let rec = Matte.mem.get(m.id); if (!rec || !rec.index) { if (playing) Matte.open(m.id); else { await Matte.open(m.id); rec = Matte.mem.get(m.id); } }
-  // A frame skipped by the faster analysis sits between two analysed ones and takes their average.
-  const between = rec && rec.index && !Matte.has(m.id, i0) && i0 > 0 && Matte.has(m.id, i0 - 1) && Matte.has(m.id, i0 + 1);
-  if (between) { const key = m.id + ':b' + i0 + ':' + rec.w; if (r.cutKey === key && r.cutTex) hq = true; else { let a = Matte.get(m.id, i0 - 1); if (!a && !playing) { await Matte.loadChunk(m.id, Math.floor((i0 - 1) / Matte.CH)); a = Matte.get(m.id, i0 - 1); }
-      if (a) { const n = a.length; if (!FaceAI._mixA || FaceAI._mixA.length !== n) FaceAI._mixA = new Uint8Array(n); FaceAI._mixA.set(a); let b = Matte.get(m.id, i0 + 1); if (!b && !playing) { await Matte.loadChunk(m.id, Math.floor((i0 + 1) / Matte.CH)); b = Matte.get(m.id, i0 + 1); }
-        if (b) { const A = FaceAI._mixA; for (let i = 0; i < n; i++) A[i] = (A[i] + b[i]) >> 1; } if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, FaceAI._mixA, rec.w, rec.h); r.cutKey = key; hq = true; if (playing) Matte.warm(m.id, i0 + 8); }
-      else if (playing && r.cutTex && r.cutHQ) hq = true; } }
-  else if (rec && rec.index && Matte.has(m.id, i0)) {
-    // Slow motion shows frames in between two analysed ones: their mattes are cross-faded.
-    const two = tween && frac > 0.06 && frac < 0.94 && Matte.has(m.id, i0 + 1), key = m.id + ':' + i0 + ':' + (two ? Math.round(frac * 8) : 0) + ':' + rec.w;
-    if (r.cutKey === key && r.cutTex) hq = true;
-    else {
-      let a = Matte.get(m.id, i0); if (!a && !playing) { await Matte.loadChunk(m.id, Math.floor(i0 / Matte.CH)); a = Matte.get(m.id, i0); }
-      if (a) { let bytes = a;
-        if (two) { const n = a.length; if (!FaceAI._mixA || FaceAI._mixA.length !== n) FaceAI._mixA = new Uint8Array(n); FaceAI._mixA.set(a); let b = Matte.get(m.id, i0 + 1); if (!b && !playing) { await Matte.loadChunk(m.id, Math.floor((i0 + 1) / Matte.CH)); b = Matte.get(m.id, i0 + 1); }
-          if (b) { const A = FaceAI._mixA, w1 = Math.round(frac * 256), w0 = 256 - w1; for (let i = 0; i < n; i++) A[i] = (A[i] * w0 + b[i] * w1) >> 8; } bytes = FaceAI._mixA; }
-        if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, bytes, rec.w, rec.h); r.cutKey = key; hq = true; if (playing) Matte.warm(m.id, i0 + 8);
-      } else if (playing && r.cutTex && r.cutHQ) hq = true;      // still being read from storage: keep the last one for this frame
+  const playing = R && R.curMode === 'play', zoom = !(vals && vals.zoomIn === false);
+  const own = fxi && fxi.defId === 'tf.cutout', want = own && vals && vals.model === 1 ? 'fast' : (own ? 'detail' : (FaceAI.segKind || 'detail'));
+  // The frame of the clip that is on screen, and whether it is a real frame or one made up between two (slow motion).
+  const f = layer.type === 'video' ? (r.lastSrcF != null ? r.lastSrcF : 0) : 0, i0 = Math.max(0, Math.floor(f + 1e-4));
+  const tween = layer.type === 'video' && layer.video && layer.video.interp && layer.video.interp !== 'none' && !playing && layer.video.freeze == null && f - i0 > 0.03 && f - i0 < 0.97;
+  // Masks are remembered per clip, model and setting. A frame that was masked once is never worked out again,
+  // so a clip plays smoothly from the second time on (or straight away after "Prepare this clip").
+  const kind = FaceAI.segKind && FaceAI.segFell !== want && FaceAI.segKind !== want ? null : (FaceAI.segKind || want), cid = Matte.cid(m.id, kind || want, zoom);
+  let have = false;
+  if (!tween) {
+    let rec = Matte.mem.get(cid); if (!rec || !rec.index) { if (playing) Matte.open(cid); else { await Matte.open(cid); rec = Matte.mem.get(cid); } }
+    if (rec && rec.index && Matte.has(cid, i0)) { const key = cid + ':' + i0 + ':' + rec.w;
+      if (r.cutKey === key && r.cutTex) have = true;
+      else { let a = Matte.get(cid, i0); if (!a && !playing) { await Matte.loadChunk(cid, Math.floor(i0 / Matte.CH)); a = Matte.get(cid, i0); }
+        if (a) { if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, a, rec.w, rec.h); r.cutKey = key; have = true; if (playing) Matte.warm(cid, i0 + 8); }
+        else if (playing && r.cutTex) have = true; }     // still being read from storage: keep the last one for this frame
     }
   }
-  // 2. Exporting a frame that was never analysed: analyse it now, so an export is always the best quality.
-  else if (exporting && !Matte.exportOff) {
-    try { await Matte.engine(); const src = layer.type === 'image' ? { img: m.image } : (r.lastFr && r.lastFr.tex ? { rt: r.lastFr } : null);
-      if (src) { const a = await Matte.alpha(src, m.w, m.h, 'export:' + layer.id, { zoom: !(vals && vals.zoomIn === false) }); if (!tween || frac < 0.03 || layer.type === 'image') Matte.put(m.id, i0, a.w, a.h, a.data); if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, a.data, a.w, a.h); r.cutKey = ''; hq = true; } }
-    catch (e) { Matte.exportOff = true; console.warn('best-quality matte not available for this export', e); }
-  }
-  // 3. Otherwise the quick model, live.
-  if (!hq) {
-    if (!FaceAI.seg) { if (!FaceAI._segLoad) FaceAI.segmenter('fast').then(() => App.requestRender()).catch(() => { }); return { uCutOn: 0 }; }
-    if (fxi && fxi.defId === 'tf.cutout') { const want = vals && vals.live === 1 ? 'detail' : 'fast'; if (FaceAI.segKind !== want && FaceAI.segFell !== want && !FaceAI._segLoad) FaceAI.segmenter(want).then(() => App.requestRender()).catch(() => { }); }
+  if (!have) {
+    if (!FaceAI.seg) { if (!FaceAI._segLoad) FaceAI.segmenter(want).then(() => App.requestRender()).catch(() => { }); return { uCutOn: 0 }; }
+    // The model the effect asks for loads in the background; the one that is ready is used meanwhile.
+    if (own && FaceAI.segKind !== want && FaceAI.segFell !== want && !FaceAI._segLoad) FaceAI.segmenter(want).then(() => App.requestRender()).catch(() => { });
     let fr = null, img = null;
     if (layer.type === 'video') { fr = r.lastFr && r.lastFr.tex ? r.lastFr : null; if (!fr) { img = r.video; if (!img || img.readyState < 2) return { uCutOn: 0 }; } } else img = m.image;
     if (!fr && !img) return { uCutOn: 0 };
     // While playing, a new mask is made only as often as the device can afford; between those the last one is kept.
     const z = FaceAI._cz && FaceAI._cz.get(layer.id), now = performance.now();
-    const reuse = playing && r.cutTex && r.cutAt && !r.cutHQ && z && z.cost > 9 && now - r.cutAt < Math.min(220, z.cost * 3);
+    const reuse = playing && r.cutTex && r.cutAt && z && z.cost > 9 && now - r.cutAt < Math.min(220, z.cost * 3);
     if (!reuse) {
-      let cv = null; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, !(vals && vals.zoomIn === false)); } catch (e) { console.warn('person mask failed', e); }
-      if (cv) { if (!r.cutTex || r.cutHQ) { r.cutTex = engine.newTex(); } engine.upload(r.cutTex, cv); r.cutAt = now; }
+      let cv = null, fin = false; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, zoom); let zz = FaceAI._cz.get(layer.id);
+        // Paused or exporting: if that was only the first, whole-frame look, look again close up straight away.
+        if (cv && zz && !zz.final && !playing) { zz.noBlend = true; const c2 = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, zoom); zz = FaceAI._cz.get(layer.id); if (zz) zz.noBlend = false; if (c2) cv = c2; }
+        fin = !!(zz && zz.final); } catch (e) { console.warn('person mask failed', e); }
+      // A frame the model could not answer keeps the last mask.
+      if (cv) { if (!r.cutTex) r.cutTex = engine.newTex(); engine.upload(r.cutTex, cv); r.cutAt = now; r.cutKey = '';
+        if (!tween && fin && FaceAI.segKind) { try { Matte.putCanvas(Matte.cid(m.id, FaceAI.segKind, zoom), i0, cv); } catch (e) { } } }
       else if (!r.cutTex) return { uCutOn: 0 };
     }
-    r.cutKey = '';
   }
-  r.cutHQ = hq;
   const rt = R.R('cut_mask'); engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null);
-  return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0, uCutHQ: hq ? 1 : 0 };
+  return { uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 };
 };
 
 const RETOUCH_PRESETS = {
@@ -12326,7 +12319,7 @@ const MATTE_CFG = {
 };
 
 const Matte = {
-  VER: 2, CH: 40,                 // stored in groups of 40 frames
+  VER: 3, CH: 40,                 // stored in groups of 40 frames
   mem: new Map(),                 // media id -> { w, h, frames: Map(index -> packed bytes), have: Set(chunks read), dirty: Set(chunks to write), index: Set(frame numbers on disk) }
   state: new Map(),               // look-closer state per key
   eng: null, baking: false, cancel: false,
@@ -12380,6 +12373,42 @@ const Matte = {
   warm(id, idx) { const r = this.mem.get(id); if (!r || !r.index) return; for (const c of [Math.floor(idx / this.CH), Math.floor(idx / this.CH) + 1]) if (!r.have.has(c)) this.loadChunk(id, c); },
   count(id, a, b) { const r = this.mem.get(id); if (!r) return 0; let n = 0; for (let i = a; i <= b; i++) if (r.frames.has(i) || (r.index && r.index.has(i))) n++; return n; },
   async forget(id) { const r = this.mem.get(id); const all = new Set([...(r ? r.frames.keys() : []), ...((r && r.index) || [])]); const chunks = new Set(Array.from(all).map(i => Math.floor(i / this.CH))); this.mem.delete(id); for (const c of chunks) { try { await Store.del('media', this.key(id, c)); } catch (e) { } } try { await Store.del('media', this.key(id, 'index')); } catch (e) { } },
+
+  // Masks from the quick person model are kept per clip, model and setting.
+  cid(mediaId, kind, zoom) { return mediaId + '|' + kind + '|' + (zoom ? 1 : 0); },
+  putCanvas(id, idx, cv) { const w = cv.width, h = cv.height, d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data, n = w * h; if (!this._pc || this._pc.length !== n) this._pc = new Uint8Array(n); const u = this._pc; for (let i = 0, o = 0; i < n; i++, o += 4) u[i] = d[o]; this.put(id, idx, w, h, u); this.flushSoon(id); },
+  flushSoon(id) { if (!this._ft) this._ft = new Map(); if (this._ft.has(id)) return; this._ft.set(id, setTimeout(() => { this._ft.delete(id); this.flush(id); }, 2500)); },
+  // Goes through every frame the clip shows and stores its mask, so the whole clip plays smoothly straight away.
+  // Each frame gets its own fresh mask (no carry-over from the frame before), and one-frame flicker is evened out.
+  async prepare(l, vals, onP) {
+    const m = Media.items.get(l.mediaId); if (!m) throw new Error('Select a video or photo clip.');
+    const want = vals && vals.model === 1 ? 'fast' : 'detail', zoom = !(vals && vals.zoomIn === false);
+    onP && onP('Loading the person model…', 0); await FaceAI.segmenter(want);
+    const cid = this.cid(m.id, FaceAI.segKind, zoom); await this.open(cid);
+    const todo = this.framesOf(l).filter(i => !this.has(cid, i)); if (!todo.length) return { done: 0, total: 0 };
+    this.cancel = false; this.baking = true; const key = 'prep:' + l.id; if (FaceAI._cz) FaceAI._cz.delete(key);
+    const prevBusy = Exporter.busy; try { Player.pause(); } catch (e) { } await Renderer._lock; Exporter.busy = true;
+    const t0 = performance.now(); let done = 0, last = null, prev = null, prevIdx = -9, lastIdx = -9, w = 0, h = 0;
+    try {
+      for (const idx of todo) {
+        if (this.cancel) break;
+        let fr = null, img = null; if (l.type === 'image') img = m.image; else { fr = await Renderer.videoFrameIdx(l, idx, 'exact', false); if (!fr) continue; }
+        if (!FaceAI._cz) FaceAI._cz = new Map(); if (!FaceAI._cz.get(key)) FaceAI._cz.set(key, {}); FaceAI._cz.get(key).noBlend = true;   // fresh: no carry-over from the frame before
+        let cv = FaceAI.maskFor(key, fr, img, m.w, m.h, zoom); if (!cv) continue;
+        if (!FaceAI._cz.get(key).final) { const c2 = FaceAI.maskFor(key, fr, img, m.w, m.h, zoom); if (c2) cv = c2; }      // the first look was the whole frame: look again close up
+        w = cv.width; h = cv.height; const d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data, cur = new Uint8Array(w * h); for (let i = 0, o = 0; i < cur.length; i++, o += 4) cur[i] = d[o];
+        // A single frame that disagrees with both neighbours, where the neighbours agree, is flicker: it takes their value there.
+        if (prev && last && idx === lastIdx + 1 && lastIdx === prevIdx + 1 && last.length === cur.length) { let ch = 0; for (let i = 0; i < last.length; i++) { const d02 = prev[i] - cur[i]; if (d02 < 26 && d02 > -26) { const mid = (prev[i] + cur[i]) >> 1, dd = last[i] - mid; if (dd > 26 || dd < -26) { last[i] = mid; ch++; } } } if (ch) this.put(cid, lastIdx, w, h, last); }
+        this.put(cid, idx, w, h, cur); prev = last; prevIdx = lastIdx; last = cur; lastIdx = idx; done++;
+        const el = (performance.now() - t0) / 1000, left = el / done * (todo.length - done);
+        onP && onP(`Preparing frame ${done} of ${todo.length}` + (done > 5 ? ` · about ${left < 90 ? Math.ceil(left) + ' s' : Math.ceil(left / 60) + ' min'} left` : ''), done / todo.length);
+        if (done % this.CH === 0) await this.flush(cid);
+        if (done % 2 === 0) await new Promise(r => setTimeout(r, 0));
+      }
+    } finally { Exporter.busy = prevBusy; this.baking = false; await this.flush(cid); try { Runtime.get(l).cutKey = ''; App.requestRender(); } catch (e) { } }
+    return { done, total: todo.length, stopped: this.cancel, perFrame: done ? (performance.now() - t0) / done : 0 };
+  },
+  async readyOf(l, vals) { const m = Media.items.get(l.mediaId); if (!m) return { done: 0, total: 0 }; const want = vals && vals.model === 1 ? 'fast' : 'detail', kind = FaceAI.segKind && (FaceAI.segKind === want || FaceAI.segFell === want) ? FaceAI.segKind : want, cid = this.cid(m.id, kind, !(vals && vals.zoomIn === false)); await this.open(cid); const fr = this.framesOf(l); let done = 0; for (const i of fr) if (this.has(cid, i)) done++; return { done, total: fr.length }; },
 
   // ---- the model ------------------------------------------------------------------
   async fetchModel(onP) {
@@ -14355,8 +14384,6 @@ Object.assign(UI, {
   acknowledgements() {
     const items = [
       ['mp4-muxer', 'MIT licence. Copyright Vanilagy. Writes the exported MP4 files.'],
-      ['MODNet portrait matting model', 'Apache License 2.0. Zhanghan Ke and co-authors (AAAI 2022). Used by Remove Background; downloaded the first time the tool is used.'],
-      ['ONNX Runtime Web', 'MIT License. Copyright Microsoft Corporation. Runs the matting model on this device.'],
       ['VisualOn AAC encoder (vo-aacenc)', 'Apache License 2.0. Copyright 2003-2010 VisualOn. Built into TwoFrame to write AAC sound in exported videos and M4A files.'],
       ['MediaPipe Tasks Vision, Face Landmarker, Selfie Segmenter and Selfie Multiclass models', 'Apache License 2.0. Copyright Google LLC. Used by Retouch, Remove Background and the person tools; downloaded the first time one is opened.'],
       ['Transformers.js', 'Apache License 2.0. Copyright Hugging Face. Runs the caption model on the device.'],
@@ -14640,39 +14667,24 @@ Object.assign(App, {
 });
 (() => {
   const search = UI.searchAll, clipTools = UI.clipTools, openTool = UI.openTool;
-  // Remove Background. The clip is analysed once with the matting model; after that it plays smoothly.
-  const analysePerson = async (l, opts = {}) => {
-    const bar = el('div', { class: 'bar' }, el('i')), label = el('p', { class: 'hint' }, 'Starting…'), note = el('p', { class: 'hint' }, 'This runs once per clip, on your device. Afterwards the clip plays and exports without waiting. You can stop at any time; frames already done are kept.');
-    UI.modal('Removing the background', el('div', {}, bar, label, note), [['Stop', () => { Matte.cancel = true; label.textContent = 'Stopping…'; }]]);
-    const show = (text, f) => { label.textContent = text; bar.firstChild.style.width = Math.round(Math.max(0, Math.min(1, f || 0)) * 100) + '%'; };
-    try {
-      // On a slow device a long clip can take minutes. Say so first and offer the faster run.
-      if (!opts.every) { await Matte.engine(show); const pr = await Matte.progressOf(l), left = (opts.redo ? pr.total : pr.total - pr.done), est = left * Matte.frameMs(l) / 1000;
-        if (est > 100 && left > 60) { const mins = (s) => s < 90 ? Math.round(s / 5) * 5 + ' seconds' : 'about ' + Math.max(2, Math.round(s / 60)) + ' minutes';
-          const pick = await new Promise(res => UI.modal('Removing the background', el('div', {}, el('p', {}, `This clip has ${left} frames to analyse. On this device that takes ${mins(est)}.`), el('p', { class: 'hint' }, 'The faster run analyses every other frame and fills in the ones between. It takes half the time; edges can be a little softer on fast movement. A shorter clip is quicker too: trim it first if you only need part of it.')),
-            [['Cancel', () => res(0)], ['Faster (' + mins(est / 2) + ')', () => res(2)], ['Best (' + mins(est) + ')', () => res(1), 'primary']]));
-          if (!pick) { UI.closeModal(); UI.refresh(); return; } if (pick === 2) opts = { ...opts, every: 2 };
-          UI.modal('Removing the background', el('div', {}, bar, label, note), [['Stop', () => { Matte.cancel = true; label.textContent = 'Stopping…'; }]]); } }
-      const res = await Matte.analyse(l, show, opts); UI.closeModal();
-      if (res.done) toast(res.stopped ? `Stopped. ${res.done} frames are done; the rest use the quick model until you analyse them.` : `Background removed from ${res.done} frame${res.done === 1 ? '' : 's'}.`, 5000);
-      UI._matteInfo = res.done ? `Last analysis: ${Math.round(res.perFrame)} ms per frame, ${res.ep === 'webgpu' ? 'on the graphics chip' : 'in WebAssembly'}, model size ${res.short}.` : UI._matteInfo;
-    } catch (e) {
-      UI.closeModal(); try { FaceAI.segmenter('fast').then(() => App.requestRender()).catch(() => { }); } catch (e2) { }
-      UI.modal('Remove background', el('div', {}, el('p', {}, 'The best-quality model could not be used here: ' + errText(e)), el('p', { class: 'hint' }, 'The quick model is used instead. Its edges are rougher and playback is slower. Try again when you are online.')), [['OK', () => UI.closeModal()]]);
-    }
-    UI.refresh(); App.requestRender();
-  };
-  UI.analysePerson = analysePerson;
+  // Remove Background: the person model runs on the frames as they are shown, and every mask it makes is remembered.
   const removeBg = async () => { const l = App.layer() || UI.pickUnder(['video', 'image']); if (!l || (l.type !== 'video' && l.type !== 'image')) { toast('Select a video or photo first.'); return; }
-    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx');
-    const pr = await Matte.progressOf(l); if (pr.done < pr.total) await analysePerson(l); };
-  // The Remove Background card says how much of the clip is analysed and offers to do the rest.
+    try { UI.busy && UI.busy('Loading the background model…'); await FaceAI.segmenter(); UI.busy && UI.busy(null); } catch (e) { UI.busy && UI.busy(null); UI.modal('Remove background', el('p', {}, errText(e)), [['OK', () => UI.closeModal()]]); return; }
+    App.sel = l.id; App.selIds = new Set([l.id]); if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout'); UI.openTool('fx'); toast(FaceAI.segKind === 'fast' ? 'Background removed with the small model (the detailed one did not load).' : 'Background removed. Trim the Edge and Edge Softness fine-tune the outline.', 5000); };
+  // One pass over the clip that stores every frame's mask, so it plays without waiting.
+  const prepareClip = async (l) => { const fx = l.effects.find(f => f.defId === 'tf.cutout'); if (!fx) return;
+    const bar = el('div', { class: 'bar' }, el('i')), label = el('p', { class: 'hint' }, 'Starting…');
+    UI.modal('Preparing the clip', el('div', {}, bar, label, el('p', { class: 'hint' }, 'The mask of every frame is worked out once and kept on this device. After that the clip plays smoothly. You can stop at any time; frames already done are kept.')), [['Stop', () => { Matte.cancel = true; label.textContent = 'Stopping…'; }]]);
+    try { const res = await Matte.prepare(l, fx.params, (text, f) => { label.textContent = text; bar.firstChild.style.width = Math.round(Math.max(0, Math.min(1, f || 0)) * 100) + '%'; }); UI.closeModal(); if (res.done) toast(res.stopped ? `Stopped. ${res.done} frames are ready.` : `Ready. ${res.done} frames prepared (${Math.round(res.perFrame)} ms each).`, 5000); }
+    catch (e) { UI.closeModal(); UI.modal('Preparing the clip', el('p', {}, errText(e)), [['OK', () => UI.closeModal()]]); }
+    UI.refresh(); App.requestRender(); };
+  UI.prepareClip = prepareClip;
+  // The Remove Background card says how many frames are ready and offers to prepare the rest.
   { const pfx = UI.panel_fx; UI.panel_fx = function (body, l) { const r = pfx.apply(this, arguments);
-      try { const at = l.effects.findIndex(f => f.defId === 'tf.cutout'), cards = body.querySelectorAll('.fxcard'); if (at >= 0 && cards[at]) { const row = el('div', { class: 'mattestat' }, el('span', { class: 'hint' }, 'Checking…')); const card = cards[at]; card.insertBefore(row, card.children[1] || null);
-          Matte.progressOf(l).then(pr => { row.innerHTML = ''; const all = pr.total && pr.done >= pr.total;
-            row.append(el('span', { class: 'hint' }, !pr.total ? '' : all ? `Analysed: all ${pr.total} frame${pr.total === 1 ? '' : 's'}. Plays smoothly at the best quality.` : pr.done ? `Analysed: ${pr.done} of ${pr.total} frames. The rest use the quick model.` : 'Not analysed yet. The quick model is used, which is rougher and slower.'),
-              el('div', { class: 'btnrow' }, all ? null : el('button', { class: 'btn sm primary', onclick: () => analysePerson(l) }, pr.done ? 'Analyse the rest' : 'Analyse this clip'), pr.done ? el('button', { class: 'btn sm', onclick: () => analysePerson(l, { redo: true }) }, 'Analyse again') : null),
-              UI._matteInfo ? el('span', { class: 'hint' }, UI._matteInfo) : null); }).catch(() => { row.remove(); }); } } catch (e) { }
+      try { const at = l.effects.findIndex(f => f.defId === 'tf.cutout'), cards = body.querySelectorAll('.fxcard'); if (at >= 0 && cards[at] && (l.type === 'video' || l.type === 'image')) { const row = el('div', { class: 'mattestat' }, el('span', { class: 'hint' }, ' ')); const card = cards[at]; card.insertBefore(row, card.children[1] || null);
+          Matte.readyOf(l, l.effects[at].params).then(pr => { row.innerHTML = ''; if (!pr.total) { row.remove(); return; } const all = pr.done >= pr.total;
+            row.append(el('span', { class: 'hint' }, all ? `Smooth playback: all ${pr.total} frame${pr.total === 1 ? ' is' : 's are'} ready.` : `Smooth playback: ${pr.done} of ${pr.total} frames ready. Frames get ready as they are shown, or all at once:`),
+              all ? null : el('div', { class: 'btnrow' }, el('button', { class: 'btn sm primary', onclick: () => prepareClip(l) }, 'Prepare this clip'))); }).catch(() => { row.remove(); }); } } catch (e) { }
       return r; }; }
   // Extract Audio: the sound of a clip as its own clip on the timeline, or as a file.
   const clipSound = async (l) => { const m = l && Media.items.get(l.mediaId); if (!m) return null; if (!m.audio && m.audioReady) { UI.busy && UI.busy('Reading the sound…'); try { await m.audioReady; } catch (e) { } UI.busy && UI.busy(null); } return m; };
@@ -14948,56 +14960,41 @@ if (typeof LOOKS !== 'undefined') LOOKS.push(
 // the real outline, and hair keeps a soft, partly see-through edge.
 // ---------------------------------------------------------------------------
 {
-  const CUT_LOW = (u, w, h) => { const k = Math.min(1, 720 / Math.max(w, h)); return [w * k, h * k]; };
-  const CUT_TINY = (u, w, h) => { const k = Math.min(1, 160 / Math.max(w, h)); return [w * k, h * k]; };
-  fxm('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Analyse the clip once for the best result and smooth playback.', [
-    S('shrink', 'Trim the Edge', 0.1, 0, 1), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('despill', 'Clean Edge Colour', 0.8, 0, 1), B('invert', 'Keep the Background Instead', false),
-    L('live', 'Quick Model (frames not analysed yet)', 0, ['Fast', 'Detailed (slower)']), B('zoomIn', 'Look Closer at the Person', true),
-    S('refine', 'Follow the Outline (quick model)', 0.75, 0, 1), S('smoothE', 'Outline Search Width (quick model)', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), B('showmask', 'Show the Mask', false)
+  const CUT_LOW = (u, w, h) => { const k = Math.min(1, 480 / Math.max(w, h)); return [w * k, h * k]; };
+  fxm('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Loads a model the first time.', [
+    S('shrink', 'Trim the Edge', 0.1, 0, 1), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('despill', 'Clean Edge Colour', 0.6, 0, 1), B('invert', 'Keep the Background Instead', false),
+    L('model', 'Model', 0, ['Detailed (hair and clothes)', 'Fast']), B('zoomIn', 'Look Closer at the Person', true),
+    S('refine', 'Follow the Outline', 0.75, 0, 1), S('smoothE', 'Outline Search Width', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), B('showmask', 'Show the Mask', false)
   ], [
     { scale: 0.5, body: `void main(){ gl_FragColor = tfGet(vUv); }` },
-    // The picture and the rough mask, small. The quick model's mask gets more contrast first (measured: its soft zone is wider than the true edge).
-    { size: CUT_LOW, save: 'a', body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutHQ;
-void main(){ vec4 s = tfGet(vUv); vec4 mk = texture2D(uCut, vUv); float m = mk.r * mk.a * step(0.5, uCutOn); if (uCutHQ < 0.5) m = smoothstep(0.2, 0.8, m); gl_FragColor = vec4(tfUn(s), m); }` },
-    // Quick model only: fit the mask to the picture's colours (guided filter), 5 x 5 window.
+    { size: CUT_LOW, save: 'a', body: `uniform sampler2D uCut; uniform float uCutOn;
+void main(){ vec4 s = tfGet(vUv); vec4 mk = texture2D(uCut, vUv); gl_FragColor = vec4(tfUn(s), mk.r * mk.a * step(0.5, uCutOn)); }` },
     { size: CUT_LOW, float: true, body: `
-void main(){ vec2 px = (0.7 + 0.9 * smoothE) / acScreenSize; vec3 mI = vec3(0.0); float mp = 0.0; vec3 mIp = vec3(0.0); vec3 d1 = vec3(0.0); vec3 d2 = vec3(0.0);
-  for (int y = -2; y <= 2; y++) { for (int x = -2; x <= 2; x++) { vec4 s = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); vec3 I = s.rgb; mI += I; mp += s.a; mIp += I * s.a; d1 += I * I; d2 += vec3(I.r * I.g, I.r * I.b, I.g * I.b); } }
-  mI /= 25.0; mp /= 25.0; mIp /= 25.0; d1 /= 25.0; d2 /= 25.0;
-  float eps = mix(0.004, 0.0001, refine); vec3 cv = mIp - mI * mp;
+void main(){ vec2 px = (0.7 + 1.1 * smoothE) / acScreenSize; vec3 mI = vec3(0.0); float mp = 0.0; vec3 mIp = vec3(0.0); vec3 d1 = vec3(0.0); vec3 d2 = vec3(0.0);
+  for (int y = -4; y <= 4; y++) { for (int x = -4; x <= 4; x++) { vec4 s = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); vec3 I = s.rgb; mI += I; mp += s.a; mIp += I * s.a; d1 += I * I; d2 += vec3(I.r * I.g, I.r * I.b, I.g * I.b); } }
+  mI /= 81.0; mp /= 81.0; mIp /= 81.0; d1 /= 81.0; d2 /= 81.0;
+  float eps = mix(0.012, 0.0006, refine); vec3 cv = mIp - mI * mp;
   float rr = d1.r - mI.r * mI.r + eps; float gg = d1.g - mI.g * mI.g + eps; float bb = d1.b - mI.b * mI.b + eps; float rg = d2.x - mI.r * mI.g; float rb = d2.y - mI.r * mI.b; float gb = d2.z - mI.g * mI.b;
   vec3 c0 = vec3(gg * bb - gb * gb, rb * gb - rg * bb, rg * gb - rb * gg); float det = rr * c0.x + rg * c0.y + rb * c0.z;
   vec3 c1 = vec3(c0.y, rr * bb - rb * rb, rg * rb - rr * gb); vec3 c2 = vec3(c0.z, c1.z, rr * gg - rg * rg);
-  vec3 a = vec3(dot(c0, cv), dot(c1, cv), dot(c2, cv)) / max(det, 1e-14);
+  vec3 a = vec3(dot(c0, cv), dot(c1, cv), dot(c2, cv)) / max(det, 1e-12);
   gl_FragColor = vec4(a, mp - dot(a, mI)); }` },
     { size: CUT_LOW, float: true, save: 'b', body: `
-void main(){ vec2 px = (0.7 + 0.9 * smoothE) / acScreenSize; vec4 s = vec4(0.0);
+void main(){ vec2 px = (0.7 + 1.1 * smoothE) * 2.0 / acScreenSize; vec4 s = vec4(0.0);
   for (int y = -2; y <= 2; y++) { for (int x = -2; x <= 2; x++) { s += texture2D(inputImg.texture, vUv + vec2(float(x), float(y)) * px); } }
   gl_FragColor = s / 25.0; }` },
-    // For cleaning edge colours: the average person colour and the average of everything, over a wide neighbourhood.
-    { size: CUT_TINY, save: 'c', body: `
-void main(){ vec2 px = 1.0 / acScreenSize; vec4 s = vec4(0.0);
-  for (int y = -3; y <= 3; y++) { for (int x = -3; x <= 3; x++) { vec4 t = texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px); s += vec4(t.rgb * t.a, t.a); } }
-  gl_FragColor = s / 49.0; }` },
-    { size: CUT_TINY, body: `
-void main(){ vec2 px = 1.0 / acScreenSize; vec3 s = vec3(0.0);
-  for (int y = -3; y <= 3; y++) { for (int x = -3; x <= 3; x++) { s += texture2D(bufA.texture, vUv + vec2(float(x), float(y)) * px).rgb; } }
-  gl_FragColor = vec4(s / 49.0, 1.0); }` },
-    { body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutFloat; uniform float uCutHQ;
+    { body: `uniform sampler2D uCut; uniform float uCutOn; uniform float uCutFloat;
+float lowM(vec2 uv){ return texture2D(bufA.texture, uv).a; }
 void main(){ vec4 s = oGet(vUv); if (uCutOn < 0.5) { gl_FragColor = s; return; } vec3 c = tfUn(s);
-  float q;
-  if (uCutHQ > 0.5) { vec4 mk = texture2D(uCut, vUv); q = mk.r * mk.a; }                      // an analysed matte is used as it is
-  else { float raw = texture2D(bufA.texture, vUv).a; q = raw;
-    if (uCutFloat > 0.5) { vec4 ab = texture2D(bufB.texture, vUv); q = clamp(dot(ab.rgb, c) + ab.a, 0.0, 1.0);
-      q = mix(q, raw, smoothstep(0.94, 1.0, raw) * 0.85); q = mix(q, raw, (1.0 - smoothstep(0.0, 0.04, raw)) * 0.85); } }
-  // Edge Softness at its default leaves the matte alone; lower makes the edge harder, higher softer. Trim moves it inward.
-  float gain = max(0.35, 1.0 + (0.3 - soft) * 4.0); float a = clamp((q - 0.5 - (edge - 0.5) - (shrink - 0.1) * 0.3) * gain + 0.5, 0.0, 1.0);
-  // Edge pixels are a blend of person and background. The person's own colour is worked out from the two neighbourhood
-  // averages (Forte and Pitie's fast foreground estimate), so no background colour is left on hair and shoulders.
-  if (despill > 0.001 && a > 0.004 && a < 0.996) { vec4 fs = texture2D(bufC.texture, vUv); vec3 mI = texture2D(inputImg.texture, vUv).rgb;
-    vec3 bF = fs.rgb / (fs.a + 1e-4); vec3 bB = (mI - fs.rgb) / (1.0 - fs.a + 1e-4); float al = clamp(q, 0.0, 1.0);
-    vec3 F = clamp(bF + al * (c - al * bF - (1.0 - al) * bB), 0.0, 1.0); float known = smoothstep(0.02, 0.12, fs.a) * smoothstep(0.02, 0.12, 1.0 - fs.a);
-    c = mix(c, F, despill * known); }
+  float raw = lowM(vUv); float q = raw;
+  if (uCutFloat > 0.5) { vec4 ab = texture2D(bufB.texture, vUv); q = clamp(dot(ab.rgb, c) + ab.a, 0.0, 1.0);
+    // Far from any edge the model's answer is kept as it is, so nothing inside the person turns see-through.
+    q = mix(q, raw, smoothstep(0.94, 1.0, raw) * 0.85); q = mix(q, raw, (1.0 - smoothstep(0.0, 0.04, raw)) * 0.85); }
+  float e = edge + shrink * 0.3; float a = smoothstep(e - soft, e + soft, q);
+  // Edge pixels still carry background colour. Take the colour from a little further inside the person.
+  if (despill > 0.001 && a > 0.01 && a < 0.985) { vec2 px = 5.0 / (acScreenSize * min(1.0, 480.0 / max(acScreenSize.x, acScreenSize.y)));
+    vec2 g = vec2(lowM(vUv + vec2(px.x, 0.0)) - lowM(vUv - vec2(px.x, 0.0)), lowM(vUv + vec2(0.0, px.y)) - lowM(vUv - vec2(0.0, px.y)));
+    if (dot(g, g) > 1e-6) { vec2 dir = normalize(g) * px; vec3 inner = tfUn(oGet(vUv + dir * 0.9)) * 0.5 + tfUn(oGet(vUv + dir * 1.8)) * 0.5; c = mix(c, inner, despill * (1.0 - a) * 0.85); } }
   if (invert) { a = 1.0 - a; c = tfUn(s); }
   float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }` }
   ]);
