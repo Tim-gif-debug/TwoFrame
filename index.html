@@ -735,6 +735,13 @@ input[type=range].fine { outline: 2px solid var(--acc); outline-offset: 3px; bor
 .labsave { flex: 1; min-height: 44px; font-size: 15px; }
 body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
 
+/* community effects */
+.cterms{max-height:34vh;overflow:auto;border:1px solid var(--line,#2a2d36);border-radius:10px;padding:8px 12px;margin:8px 0;font-size:13px;line-height:1.45}
+.cterms p{margin:6px 0}
+.csub .inp{display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:9px 10px;border-radius:8px;border:1px solid var(--line,#2a2d36);background:transparent;color:inherit;font:inherit}
+.cagree{display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:14px}
+.cagree input{width:20px;height:20px;flex:none}
+
 </style>
 </head>
 <body class="lay-mobile">
@@ -7368,6 +7375,8 @@ const Exporter = {
   busy: false, cancel: false,
   async run(p, opts, onProgress) {
     await Fonts.ready(p);
+    // The video ends where the last clip ends. Empty time after it is not exported (it used to be rendered as black frames).
+    { const end = p.layers.reduce((m, l) => l.hidden ? m : Math.max(m, l.start + l.dur), 0); if (end > 0.05 && end < p.duration - 1e-3 && !opts.fullLength) p = { ...p, duration: Math.ceil(end * (opts.fps || p.fps) - 1e-6) / (opts.fps || p.fps) }; }
     const fps = opts.fps || p.fps;
     const even = (n) => Math.max(2, Math.round(n / 2) * 2);
     // Resolution: the short side becomes 720, 1080, 1440 (2K) or 2160 (4K).
@@ -7414,7 +7423,9 @@ const Exporter = {
     });
     let encErr = null;
     const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: (e) => { encErr = e; } });
-    venc.configure({ codec, width: W, height: H, bitrate: vBitrate, framerate: fps, ...encExtra });
+    // The device's own video chip is asked for first; it is several times faster than encoding in software.
+    { const cfg = { codec, width: W, height: H, bitrate: vBitrate, framerate: fps, ...encExtra }; let hw = false; try { hw = !!(await VideoEncoder.isConfigSupported({ ...cfg, hardwareAcceleration: 'prefer-hardware' })).supported; } catch (e) { }
+      venc.configure(hw ? { ...cfg, hardwareAcceleration: 'prefer-hardware' } : cfg); }
 
     await Renderer._lock;
     const prevSize = [engine.width, engine.height];
@@ -7430,7 +7441,7 @@ const Exporter = {
           venc.encode(vf, { keyFrame: i % Math.round(fps * 2) === 0 });
           vf.close();
         });
-        while (venc.encodeQueueSize > 4) await sleep(4);
+        while (venc.encodeQueueSize > 6) await sleep(2);
         onProgress((i + 1) / N * (audioOk ? 0.95 : 1));
       }
       await venc.flush();
@@ -12440,7 +12451,15 @@ const FrameSource = {
   async frameAt(m, t) {
     if (!this.on) return null;
     const st = await this.open(m); if (!st.ok) return null;
-    const run = (st.chain || Promise.resolve()).then(() => this.fetch(st, t)).catch((e) => { console.warn('Exact decoding stopped for this clip:', e.message || e); st.ok = false; st.why = String(e.message || e); this.close(st); return null; });
+    const run = (st.chain || Promise.resolve()).then(async () => {
+      try { return await this.fetch(st, t); }
+      catch (e) {
+        // One clean second try before falling back to the slow way (seeking the video).
+        this.close(st);
+        try { return await this.fetch(st, t); }
+        catch (e2) { st.fails = (st.fails || 0) + 1; console.warn('Exact decoding missed a frame:', e2.message || e2); this.close(st); if (st.fails >= 4) { st.ok = false; st.why = String(e2.message || e2); } return null; }
+      }
+    });
     st.chain = run.then(() => { }); return run;
   },
   close(st) { for (const f of st.frames.values()) { try { f.close(); } catch (e) { } } st.frames.clear(); try { st.dec && st.dec.state !== 'closed' && st.dec.close(); } catch (e) { } st.dec = null; st.fed = -2; },
@@ -12449,15 +12468,25 @@ const FrameSource = {
     let lo = 0, hi = st.n - 1; t = Math.max(0, t);
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (st.times[mid] <= t + 1e-4) lo = mid; else hi = mid - 1; }
     const k = lo, target = st.order[k];
-    if (st.frames.has(k)) return st.frames.get(k).clone();
     st.want = k;
+    const hit = st.frames.has(k) ? st.frames.get(k).clone() : null;
     let ki = target; while (ki > 0 && !st.key[ki]) ki--;
     // Leading frames can depend on the key frame before them in decode order.
     while (ki > 0 && st.cts[ki] > st.cts[target]) { ki--; while (ki > 0 && !st.key[ki]) ki--; }
-    const restart = !st.dec || st.dec.state !== 'configured' || target <= st.fed || ki > st.fed + 1;
+    // Start again from a key frame only when it is really needed: nothing is running, the frame lies beyond
+    // the next key frame, or the frame already came out of the decoder and has been let go. A frame that was
+    // handed in and has not come out yet is simply waited for. (Restarting for those made clips with
+    // reordered frames decode the same stretch again and again, which is what made exports crawl.)
+    if (hit) { // keep the decoder supplied while frames are being used in order
+      if (st.dec && st.dec.state === 'configured' && !st.flushed && st.fed < st.n - 1 && st.fed < target + 4) { try { const us0 = (i) => Math.round((st.cts[i] - st.c0) / st.ts * 1e6); const upto = Math.min(target + 4, st.n - 1), a0 = st.fed + 1; let lo2 = Infinity, hi2 = 0; for (let i = a0; i <= upto; i++) { lo2 = Math.min(lo2, st.offs[i]); hi2 = Math.max(hi2, st.offs[i] + st.size[i]); }
+        if (hi2 - lo2 < 48e6) { st.fed = upto; const buf = new Uint8Array(await st.blob.slice(lo2, hi2).arrayBuffer()); if (st.dec && st.dec.state === 'configured') for (let i = a0; i <= upto; i++) st.dec.decode(new EncodedVideoChunk({ type: st.key[i] ? 'key' : 'delta', timestamp: us0(i), duration: Math.round(st.lastDelta / st.ts * 1e6), data: buf.subarray(st.offs[i] - lo2, st.offs[i] - lo2 + st.size[i]) })); } } catch (e) { hit.close(); throw e; } }
+      return hit; }
+    const gone = target <= st.fed && (k <= (st.lastOut ?? -1) || st.flushed);
+    const restart = !st.dec || st.dec.state !== 'configured' || gone || ki > st.fed + 1;
     if (restart) {
       if (st.dec && st.dec.state === 'configured') st.dec.reset(); else { try { st.dec && st.dec.close(); } catch (e) { } st.dec = new VideoDecoder({ output: (f) => this.onFrame(st, f), error: (e) => { st.err = e; this.wake(st); } }); }
-      st.err = null; st.dec.configure(st.cfg); st.fed = ki - 1;
+      st.err = null; st.dec.configure(st.cfg); st.fed = ki - 1; st.lastOut = -1; st.flushed = false;
+      for (const [key, f] of st.frames) if (key < k - 1 || key > k + 12) { try { f.close(); } catch (e) { } st.frames.delete(key); }
     }
     const us = (i) => Math.round((st.cts[i] - st.c0) / st.ts * 1e6);
     const feed = async (upto) => {
@@ -12472,12 +12501,17 @@ const FrameSource = {
       st.fed = upto;
     };
     const waitOut = (ms) => new Promise(res => { const w = () => { clearTimeout(tm); res(); }; const tm = setTimeout(() => { st.waiters = st.waiters.filter(x => x !== w); res(); }, ms); st.waiters.push(w); });
-    await feed(target + 2);
-    for (let tries = 0; !st.frames.has(k) && tries < 60; tries++) {
+    // A few frames are always handed in ahead, so the decoder never sits idle between frames.
+    const AHEAD = 4;
+    await feed(target + AHEAD);
+    const t0 = performance.now();
+    while (!st.frames.has(k)) {
       if (st.err) throw st.err;
-      await waitOut(st.dec.decodeQueueSize > 0 ? 250 : 40);
+      if (performance.now() - t0 > 12000) break;
+      await waitOut(st.dec.decodeQueueSize > 0 ? 250 : 25);
       if (st.frames.has(k)) break;
-      if (st.dec.decodeQueueSize === 0) { if (st.fed < Math.min(st.n - 1, target + 24)) await feed(st.fed + 3); else { await st.dec.flush(); st.fed = st.n + 5; break; } }
+      if ((st.lastOut ?? -1) > k + 1) break;
+      if (st.dec.decodeQueueSize === 0) { if (st.fed < st.n - 1) await feed(st.fed + 4); else if (!st.flushed) { st.flushed = true; await st.dec.flush(); } else break; }
     }
     if (st.err) throw st.err;
     const f = st.frames.get(k); if (!f) throw new Error('frame did not arrive');
@@ -12487,11 +12521,13 @@ const FrameSource = {
   onFrame(st, f) {
     // nearest presentation index for this timestamp
     const t = f.timestamp / 1e6; let lo = 0, hi = st.n - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (st.times[mid] <= t + 1e-4) lo = mid; else hi = mid - 1; }
-    const k = lo, want = st.want ?? k;
+    const k = lo, want = st.want ?? k; if (k > (st.lastOut ?? -1)) st.lastOut = k;
     if (k < want - 1 || st.frames.has(k)) { f.close(); this.wake(st); return; }
     st.frames.set(k, f);
     // Keep only a few decoded frames: each one holds a full-size picture in memory.
-    while (st.frames.size > (typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM ? 4 : 6)) { let worst = null; for (const key of st.frames.keys()) if (key !== want && (worst === null || Math.abs(key - want) > Math.abs(worst - want))) worst = key; if (worst === null) break; st.frames.get(worst).close(); st.frames.delete(worst); }
+    // Frames behind the one being shown go first; frames still to come are kept, because fetching them again means decoding from a key frame.
+    const cap = typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM ? 7 : 10;
+    while (st.frames.size > cap) { let worst = null; for (const key of st.frames.keys()) { if (key === want) continue; if (worst === null) { worst = key; continue; } const bw = worst < want, bk = key < want; if (bk && (!bw || key < worst)) worst = key; else if (!bk && !bw && key > worst) worst = key; } if (worst === null) break; st.frames.get(worst).close(); st.frames.delete(worst); }
     this.wake(st);
   },
   drop(mediaId) { const st = this.map.get(mediaId); if (st) { this.close(st); this.map.delete(mediaId); } }
@@ -12583,17 +12619,20 @@ const flowOpts = (v) => ({ detail: v.detail ?? 0.5, cleanup: v.cleanup ?? 0.5, s
 (() => {
   const R = Renderer, renderLayer = R.renderLayer, syncVideos = Player.syncVideos;
   R.renderLayer = function (layer, contentT, ...rest) { if (layer.type === 'video') this._lt = contentT; return renderLayer.call(this, layer, contentT, ...rest); };
-  const store = (r, m, i, mode, wantCache, src) => {
+  const store = (r, m, i, mode, wantCache, src, rot) => {
     const E = engine, maxDim = Math.max(E.width, E.height), k = Math.min(1, maxDim / Math.max(m.w, m.h)), w = Math.max(2, Math.round(m.w * k)), h = Math.max(2, Math.round(m.h * k));
     E.upload(E.uploadTex, src);
+    const put = (rt) => { if (!rot) { E.copy(E.uploadTex, rt); return; }
+      const prog = E.program('vrot', VS_FULL, FS_HEAD + 'uniform sampler2D uTex; uniform vec2 uOut; uniform vec2 uSrc; uniform vec2 uCS;\nvoid main(){ vec2 d = (vUv - 0.5) * uOut; vec2 q = vec2(uCS.x * d.x + uCS.y * d.y, -uCS.y * d.x + uCS.x * d.y) / uSrc + 0.5; gl_FragColor = (q.x < 0.0 || q.y < 0.0 || q.x > 1.0 || q.y > 1.0) ? vec4(0.0, 0.0, 0.0, 1.0) : texture2D(uTex, q); }');
+      E.draw(prog, rt, { uTex: E.uploadTex, uOut: [m.w, m.h], uSrc: [E.uploadTex._w || m.h, E.uploadTex._h || m.w], uCS: [Math.cos(rot), Math.sin(rot)] }); };
     if (mode === 'exact' || wantCache) {
-      const rt = E.makeRT(w, h); E.copy(E.uploadTex, rt); rt._src = [E.uploadTex._w, E.uploadTex._h]; r.cache.set(i, rt);
+      const rt = E.makeRT(w, h); put(rt); rt._src = rot ? [m.w, m.h] : [E.uploadTex._w, E.uploadTex._h]; r.cache.set(i, rt);
       const low = typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM, limit = mode === 'exact' ? (low ? 8 : 12) : (low ? 12 : 24);
       while (r.cache.size > limit) { const [k0, v0] = r.cache.entries().next().value; E.freeRT(v0); r.cache.delete(k0); }
       return rt;
     }
     if (!r.live || r.live.w !== w || r.live.h !== h) { E.freeRT(r.live); r.live = E.makeRT(w, h); }
-    E.copy(E.uploadTex, r.live); return r.live;
+    put(r.live); return r.live;
   };
   R.videoFrameIdx = async function (layer, i, mode, wantCache) {
     const r = Runtime.get(layer), m = Media.items.get(layer.mediaId);
@@ -12606,11 +12645,9 @@ const flowOpts = (v) => ({ detail: v.detail ?? 0.5, cleanup: v.cleanup ?? 0.5, s
       if (vf) {
         try {
           const st = FrameSource.map.get(m.id), rot = st ? st.rot : 0;
-          if (Math.abs(rot) > 0.01) {
-            const c = R._rotC || (R._rotC = document.createElement('canvas')); c.width = m.w; c.height = m.h; const g = c.getContext('2d');
-            g.save(); g.translate(m.w / 2, m.h / 2); g.rotate(rot); g.drawImage(vf, -vf.displayWidth / 2, -vf.displayHeight / 2); g.restore();
-            return store(r, m, i, mode, wantCache, c);
-          }
+          // Phone clips are stored sideways with a note to turn them. The turn is done on the graphics chip
+          // (it used to go through a full-size 2D canvas for every frame, which was slow at 4K).
+          if (Math.abs(rot) > 0.01) return store(r, m, i, mode, wantCache, vf, rot);
           return store(r, m, i, mode, wantCache, vf);
         } finally { vf.close(); }
       }
@@ -13123,9 +13160,10 @@ Object.assign(UI, {
         list.appendChild(el('div', { class: 'sritem' }, el('b', {}, d ? d.name : r.name || 'Effect'), el('span', { class: 'grow' }),
           el('button', { class: 'btn sm', onclick: () => { this.closeModal(); setMode(r.kind, r); } }, 'Edit'),
           el('button', { class: 'btn sm', onclick: () => saveBlob(new Blob([JSON.stringify({ tfx: 1, ...r }, null, 1)], { type: 'application/json' }), Lab.slug(d ? d.name : 'effect') + '.tfx') }, 'Export'),
+          r.community ? null : el('button', { class: 'btn sm', onclick: () => { this.closeModal(); this.submitEffect(r); } }, 'Submit'),
           el('button', { class: 'btn sm danger', onclick: async () => { await Lab.remove(r.id); this.closeModal(); mine(); } }, 'Delete'))); }
       if (!Lab.items.size) list.appendChild(el('p', { class: 'hint' }, 'Nothing saved yet. Save an effect and it appears here and in the editor under My Effects.'));
-      this.modal('My effects', list, [['Import .tfx', () => file.click()], ['Close', () => this.closeModal()]]);
+      this.modal('My effects', list, [['Import .tfx', () => file.click()], ['Community', () => { this.closeModal(); this.communityLibrary(); }], ['Close', () => this.closeModal()]]);
     };
     const file = el('input', { type: 'file', accept: '.tfx,application/json', style: { display: 'none' }, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
       try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1 || !(j.kind === 'code' ? typeof j.source === 'string' : Array.isArray(j.stack))) throw new Error('This isn’t a TwoFrame effect file.');
@@ -13137,7 +13175,7 @@ Object.assign(UI, {
     const guide = () => this.modal('Effect Lab guide', el('div', { class: 'qs' }, LAB_GUIDE.map(([t, d]) => el('div', {}, el('b', {}, t), el('p', { class: 'hint', style: { whiteSpace: 'pre-wrap' } }, d)))), [['Close', () => this.closeModal()]]);
     document.body.appendChild(el('section', { id: 'lab' },
       el('header', { class: 'topbar' }, el('button', { class: 'ib', title: 'Back', onclick: close, html: ICON.back }), el('b', {}, 'Effect Lab'), modeC, modeS, el('span', { class: 'grow' }),
-        el('button', { class: 'chip', onclick: guide }, 'Guide'), el('button', { class: 'chip', onclick: () => this.effectHelp() }, 'AI prompt'), el('button', { class: 'chip', onclick: mine }, 'My effects'), el('button', { class: 'exportbtn', onclick: save }, el('span', {}, 'Save'))),
+        el('button', { class: 'chip', onclick: guide }, 'Guide'), el('button', { class: 'chip', onclick: () => this.effectHelp() }, 'AI prompt'), el('button', { class: 'chip', onclick: mine }, 'My effects'), el('button', { class: 'chip', onclick: () => this.communityLibrary() }, 'Community'), el('button', { class: 'exportbtn', onclick: save }, el('span', {}, 'Save'))),
       el('div', { class: 'labbody' }, el('div', { class: 'labside' }, view, msg, el('div', { class: 'btnrow' }, el('button', { class: 'btn primary labsave', onclick: save }, 'Save effect'), el('button', { class: 'btn', onclick: mine }, 'My effects')), controls), edit), file));
     setMode('code'); raf = requestAnimationFrame(tick);
     return { build, setMode, get def() { return def; }, get rec() { return rec; }, save, close, code };
@@ -13212,6 +13250,173 @@ App.doctor = function (p, opts = {}) {
     return r;
   };
 })();
+
+</script>
+<script>
+// ===========================================================================
+// Community effects
+//
+// TwoFrame has no server. The shared library is one plain file,
+// community.json, that sits next to index.html on the site. The app reads it,
+// and anyone can add an effect from it to their own effects.
+//
+// Getting INTO that file goes through a person: a creator agrees to the
+// terms below and sends their effect file; the site owner looks at it and, if
+// it is good and original, adds it to community.json and uploads the file.
+// Nothing is published automatically.
+// ===========================================================================
+const TF_COMMUNITY = Object.assign({ file: 'community.json', submit: 'https://github.com/tim-gif-debug/TwoFrame/issues/new', email: '' }, window.TF_COMMUNITY || {});
+
+const Community = {
+  TERMS_VERSION: 1,
+  TERMS: [
+    ['It is your own work', 'You wrote this effect yourself, or you have the right to share every part of it. It has no code, presets or names taken from another app, website or person, unless their licence lets anyone reuse it in a paid product and you have named them on the @credit line.'],
+    ['What you allow', 'The effect stays yours. You give the maker of TwoFrame a free, worldwide, lasting, non-exclusive licence to include it in TwoFrame, to adjust it so it keeps working, and to offer it to every user in the free and the paid versions.'],
+    ['No payment', 'You are not paid for a submitted effect, now or later, unless a separate written agreement says so.'],
+    ['Credit', 'The creator name you type below is shown with the effect.'],
+    ['Review', 'A person looks at every submission. It can be declined, edited or removed at any time. Effects that are close to one already in the library, or that copy the look of another product by name, are not accepted.'],
+    ['Content', 'No hateful, sexual or illegal content, and no names or logos of other products. An effect with strong flashing has to say so in its name or description.'],
+    ['Taking it back', 'You can ask for your effect to be removed. It is then left out of the library from the next update on. Copies people already added to their own effects stay with them.'],
+    ['Your promise', 'If someone says the effect copies theirs, answering that is your responsibility, and the effect may be removed straight away.'],
+    ['Age', 'You are 18 or older, or a parent or guardian has read this and agrees for you.'],
+    ['Contact', 'A contact you give is used only to reach you about this submission.']
+  ],
+  list: [], loaded: false, error: '',
+  time(def) { const src = engine.rt('com_src', 64, 36); engine.clear(src, [0.4, 0.5, 0.6, 1]); Lab.probe(def, defaultParams(def), src); return Lab.probe(def, defaultParams(def), src); },
+  async load(force) {
+    if (this.loaded && !force) return this.list;
+    try { const c = JSON.parse(localStorage.getItem('tf.community') || 'null'); if (c && Array.isArray(c.effects)) this.list = c.effects; } catch (e) { }
+    try {
+      const r = await fetch(TF_COMMUNITY.file + (TF_COMMUNITY.file.includes('?') ? '&' : '?') + 't=' + Math.floor(Date.now() / 60000), { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status === 404 ? 'none yet' : 'HTTP ' + r.status);
+      const j = await r.json(); if (!j || !Array.isArray(j.effects)) throw new Error('the library file is not valid');
+      this.list = j.effects.filter(e => e && e.id && (e.kind === 'code' ? typeof e.source === 'string' : Array.isArray(e.stack))); this.error = '';
+      try { const s = JSON.stringify({ effects: this.list }); if (s.length < 1500000) localStorage.setItem('tf.community', s); } catch (e) { }
+    } catch (e) { this.error = String(e.message || e); }
+    this.loaded = true; return this.list;
+  },
+  // ---- how alike two effects are --------------------------------------------------
+  // The code is stripped of comments and spacing and cut into runs of four
+  // words. The share of runs two effects have in common is their likeness.
+  grams(src) {
+    const t = String(src || '').replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').match(/[A-Za-z_]\w*|\d+\.?\d*|[^\s\w]/g) || [], out = new Set();
+    for (let i = 0; i + 4 <= t.length; i++) out.add(hash32(t[i] + ' ' + t[i + 1] + ' ' + t[i + 2] + ' ' + t[i + 3]));
+    return out;
+  },
+  common() { return this._common || (this._common = this.grams(TF_PRELUDE + FXH + (typeof FXP !== 'undefined' ? FXP : '') + Lab.PRE)); },
+  own(src) { const g = this.grams(src), c = this.common(); for (const x of c) g.delete(x); return g; },
+  alike(a, b) { if (!a.size || !b.size) return 0; let n = 0; const [s, l] = a.size < b.size ? [a, b] : [b, a]; for (const x of s) if (l.has(x)) n++; return n / Math.max(60, Math.min(a.size, b.size)); },   // very small effects share their few lines with everything, so they count for less
+  // The most similar effect already known (built in, community, or another saved one).
+  closest(rec) {
+    if (rec.kind !== 'code') return { name: '', score: 0 };
+    const mine = this.own(rec.source); let best = { name: '', score: 0 };
+    const see = (name, src) => { const sc = this.alike(mine, this.own(src)); if (sc > best.score) best = { name, score: sc }; };
+    if (!this._built) { this._built = []; for (const d of EffectLib.list()) if (d.builtin && d.kind === 'shader' && d.shader) this._built.push([d.name, this.own(d.shader)]); }
+    for (const [name, g] of this._built) { const sc = this.alike(mine, g); if (sc > best.score) best = { name, score: sc }; }
+    for (const e of this.list) if (e.kind === 'code' && e.id !== (rec.community && rec.community.id)) see(e.name || 'a community effect', e.source);
+    for (const e of (typeof LAB_EXAMPLES !== 'undefined' ? LAB_EXAMPLES : [])) if (Array.isArray(e) && e[1]) see('the Effect Lab example “' + e[0] + '”', e[1]);
+    return best;
+  },
+  // What has to be true before an effect may be sent in.
+  check(rec) {
+    const problems = [], notes = []; let def = null, name = rec.name || '';
+    try { def = Lab.defOf(rec); } catch (e) { }
+    if (!def) return { ok: false, problems: ['The effect is empty.'], notes, name };
+    name = def.name;
+    if (rec.community) problems.push('This effect came from the community library, so it is already there.');
+    if (rec.kind === 'code') {
+      const { errs } = Lab.codeDef(rec, true); for (const e of errs) problems.push(e);
+      if (/^my effect$/i.test(name.trim())) problems.push('Give it a name of its own on the // @name line.');
+      const body = rec.source.replace(/\/\/[^\n]*/g, '').replace(/\s+/g, ''); if (body.length < 160) problems.push('It is very short. A library effect needs to do more than one small change.');
+    } else if (!rec.stack || rec.stack.length < 2) problems.push('A stack needs at least two effects in it to be worth sharing.');
+    if (EffectLib.list().some(d => d.builtin && d.name.toLowerCase() === name.trim().toLowerCase())) problems.push('“' + name + '” is already the name of a built-in effect. Pick another name.');
+    if (!problems.length) { if (!engine.effectProgram(def)) problems.push('It doesn’t compile: ' + (engine.effectError(def) || 'unknown error')); else { try { const ms = Community.time(def); if (ms < 0) problems.push('It failed when it was run.'); else if (ms > 250) problems.push('It is too slow for phones.'); } catch (e) { } } }
+    const near = this.closest(rec);
+    if (near.score >= 0.8) problems.push('It is almost the same as ' + near.name + ' (' + Math.round(near.score * 100) + '% alike). The library only takes effects that are different from what is already there.');
+    else if (near.score >= 0.5) notes.push('Closest existing effect: ' + near.name + ' (' + Math.round(near.score * 100) + '% alike). The reviewer will see this.');
+    return { ok: !problems.length, problems, notes, name, near };
+  },
+  packageFor(rec, who) {
+    const d = Lab.defOf(rec), near = this.closest(rec);
+    return { tfx: 1, kind: rec.kind, name: d.name, ...(rec.kind === 'code' ? { source: rec.source } : { stack: rec.stack }),
+      submission: { creator: who.creator, contact: who.contact || '', terms: this.TERMS_VERSION, agreed: new Date().toISOString(), agreedText: 'I have read the TwoFrame community effect terms, version ' + this.TERMS_VERSION + ', and I agree to them.', closest: near.name ? near.name + ' ' + Math.round(near.score * 100) + '%' : '' } };
+  },
+  entryOf(j) { return { id: 'c' + hash32((j.name || '') + (j.source || JSON.stringify(j.stack || '')) + ((j.submission && j.submission.creator) || '')), kind: j.kind, name: String(j.name || 'Effect').slice(0, 60), author: String((j.submission && j.submission.creator) || j.author || 'Unknown').slice(0, 60), added: new Date().toISOString().slice(0, 10), terms: (j.submission && j.submission.terms) || null, agreed: (j.submission && j.submission.agreed) || null, ...(j.kind === 'code' ? { source: String(j.source).slice(0, 20000) } : { stack: j.stack }) }; },
+  installed(e) { return Lab.items.has('c_' + e.id); },
+  async install(e) {
+    const rec = e.kind === 'code' ? { id: 'c_' + e.id, kind: 'code', source: String(e.source).slice(0, 20000), community: { id: e.id, author: e.author, name: e.name } }
+      : { id: 'c_' + e.id, kind: 'stack', name: String(e.name || 'Stack').slice(0, 40), community: { id: e.id, author: e.author, name: e.name }, stack: (e.stack || []).slice(0, 6).filter(s => s && EffectLib.get(s.defId)).map(s => ({ defId: String(s.defId), values: { ...defaultParams(EffectLib.get(s.defId)), ...(s.values || {}) }, exposed: Array.isArray(s.exposed) ? s.exposed.map(String) : [] })) };
+    if (rec.kind === 'code') { const { def, errs } = Lab.codeDef(rec, true); if (errs.length) throw new Error(errs[0]); if (!engine.effectProgram(def)) throw new Error('This effect doesn’t work on this device.'); const ms = Community.time(def); if (ms > 250) throw new Error('This effect is too slow for this device.'); }
+    await Lab.save(rec);
+  }
+};
+// Effects that came from the library show their creator and sit in their own group.
+{ const defOf = Lab.defOf; Lab.defOf = function (rec) { const d = defOf.call(this, rec); if (d && rec.community) { d.category = 'Community'; d.desc = 'Community effect by ' + (rec.community.author || 'Unknown'); d.tags = (d.tags || '') + ',community'; } return d; }; }
+
+Object.assign(UI, {
+  communityTerms(inner) {
+    const box = el('div', { class: 'cterms' }, el('p', { class: 'hint' }, 'TwoFrame community effect terms, version ' + Community.TERMS_VERSION + '.'), Community.TERMS.map(([h, t], i) => el('p', {}, el('b', {}, (i + 1) + '. ' + h + '. '), t)));
+    if (inner) return box; this.modal('Community effect terms', box, [['Close', () => this.closeModal()]]);
+  },
+  // Send one of your saved effects in for the library.
+  submitEffect(rec) {
+    const res = Community.check(rec);
+    if (!res.ok) { this.modal('Not ready to submit', el('div', {}, el('p', {}, '“' + res.name + '” can’t be sent in yet:'), el('ul', {}, res.problems.map(p => el('li', {}, p)))), [['OK', () => this.closeModal()]]); return; }
+    let saved = {}; try { saved = JSON.parse(localStorage.getItem('tf.creator') || '{}'); } catch (e) { }
+    const creator = el('input', { type: 'text', class: 'inp', maxlength: 40, placeholder: 'Creator name shown with the effect', value: saved.creator || '' }), contact = el('input', { type: 'text', class: 'inp', maxlength: 80, placeholder: 'Email or handle, so you can be told the result (optional)', value: saved.contact || '' });
+    const agree = el('input', { type: 'checkbox' }), send = el('button', { class: 'btn primary', disabled: true }, 'Agree and make the submission file');
+    const upd = () => { send.disabled = !(agree.checked && creator.value.trim().length >= 2); }; agree.onchange = upd; creator.oninput = upd;
+    send.onclick = async () => {
+      const who = { creator: creator.value.trim(), contact: contact.value.trim() }; try { localStorage.setItem('tf.creator', JSON.stringify(who)); } catch (e) { }
+      const pack = Community.packageFor(rec, who), name = Lab.slug(pack.name) + '.tfx.txt';
+      await saveBlob(new Blob([JSON.stringify(pack, null, 1)], { type: 'text/plain' }), name);
+      const url = TF_COMMUNITY.submit ? TF_COMMUNITY.submit + '?title=' + encodeURIComponent('Effect submission: ' + pack.name) + '&body=' + encodeURIComponent('Creator: ' + who.creator + '\n\nI agree to the TwoFrame community effect terms, version ' + Community.TERMS_VERSION + '.\n\nAttach the file ' + name + ' to this post (drag it in, or tap the paperclip).') : '';
+      this.modal('Send it in', el('div', {}, el('p', {}, 'The file ' + name + ' has been saved. It holds the effect, your creator name and your agreement to the terms.'),
+        TF_COMMUNITY.email ? el('p', {}, 'Email it to ' + TF_COMMUNITY.email + '.') : null,
+        url ? el('p', {}, 'Open the submission page, attach the file and post it. The page needs a free GitHub account.') : null,
+        el('p', { class: 'hint' }, 'A person reviews every effect. If it is accepted it appears under Community effects for everyone.')),
+        [url ? ['Open the submission page', () => { window.open(url, '_blank', 'noopener'); }, 'primary'] : null, ['Done', () => this.closeModal()]].filter(Boolean));
+    };
+    this.modal('Submit “' + res.name + '” to the library', el('div', { class: 'csub' },
+      el('p', {}, 'Good effects that are different from what is already there can be added to the library everyone sees. Read the terms, then agree to send it in.'),
+      res.notes.map(n => el('p', { class: 'hint' }, n)), creator, contact, this.communityTerms(true),
+      el('label', { class: 'cagree' }, agree, el('span', {}, ' I have read these terms and I agree to them.'))), [['Cancel', () => this.closeModal()]]);
+    $('#modal .mact').prepend(send);
+  },
+  async communityLibrary() {
+    this.busy && this.busy('Loading community effects…'); await Community.load(true); this.busy && this.busy(null);
+    const list = el('div', { class: 'srlist' });
+    for (const e of Community.list) { const have = Community.installed(e);
+      const b = el('button', { class: 'btn sm' + (have ? '' : ' primary') }, have ? 'Added' : 'Add'); b.disabled = have;
+      b.onclick = async () => { try { await Community.install(e); b.textContent = 'Added'; b.disabled = true; b.classList.remove('primary'); toast('“' + e.name + '” is now in your effects, under Community.'); this.refreshPanel && this.refreshPanel(); } catch (err) { toast(err.message || 'That effect could not be added.', 5000); } };
+      list.appendChild(el('div', { class: 'sritem' }, el('div', {}, el('b', {}, e.name || 'Effect'), el('div', { class: 'hint' }, 'by ' + (e.author || 'Unknown'))), el('span', { class: 'grow' }), b)); }
+    if (!Community.list.length) list.appendChild(el('p', { class: 'hint' }, Community.error && Community.error !== 'none yet' ? 'The community library could not be loaded here (' + Community.error + ').' : 'No community effects yet. Yours could be the first: save an effect in Effect Lab, open My effects and choose Submit.'));
+    this.modal('Community effects', el('div', {}, el('p', { class: 'hint' }, 'Effects made by other TwoFrame users and checked by a person before they were added.'), list),
+      [['Submit one of mine', () => { this.closeModal(); this.pickSubmission(); }], ['Terms', () => this.communityTerms()], ['Owner tools', () => this.communityOwner()], ['Close', () => this.closeModal()]]);
+  },
+  pickSubmission() {
+    const list = el('div', { class: 'srlist' }), mine = [...Lab.items.values()].filter(r => !r.community);
+    for (const r of mine) { let d = null; try { d = Lab.defOf(r); } catch (e) { } list.appendChild(el('div', { class: 'sritem' }, el('b', {}, d ? d.name : r.name || 'Effect'), el('span', { class: 'grow' }), el('button', { class: 'btn sm primary', onclick: () => { this.closeModal(); this.submitEffect(r); } }, 'Submit'))); }
+    if (!mine.length) list.appendChild(el('p', { class: 'hint' }, 'You have no saved effects yet. Make one in Effect Lab and press Save effect first.'));
+    this.modal('Which effect?', list, [['Open Effect Lab', () => { this.closeModal(); this.effectLab(); }], ['Close', () => this.closeModal()]]);
+  },
+  // For the person who runs the site: turn accepted submissions into the library file.
+  communityOwner() {
+    const state = { effects: Community.list.slice() }, list = el('div', { class: 'srlist' }), note = el('p', { class: 'hint' });
+    const draw = () => { list.innerHTML = ''; state.effects.forEach((e, i) => list.appendChild(el('div', { class: 'sritem' }, el('div', {}, el('b', {}, e.name), el('div', { class: 'hint' }, 'by ' + e.author + (e.agreed ? ' · agreed to terms v' + e.terms + ' on ' + String(e.agreed).slice(0, 10) : ' · no agreement on file'))), el('span', { class: 'grow' }), el('button', { class: 'btn sm danger', onclick: () => { state.effects.splice(i, 1); draw(); } }, 'Remove')))); if (!state.effects.length) list.appendChild(el('p', { class: 'hint' }, 'The library is empty.')); };
+    const add = () => this.pickFiles('.txt,.tfx,.json,text/plain,application/json', async (files) => { const msgs = [];
+      for (const f of files) { try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1) throw new Error('not a TwoFrame effect file');
+          if (!j.submission || !j.submission.agreed) throw new Error('it carries no agreement to the terms, so it can’t go in the library');
+          const rec = j.kind === 'code' ? { id: 'chk', kind: 'code', source: String(j.source || '') } : { id: 'chk', kind: 'stack', name: j.name, stack: j.stack || [] }, saveList = Community.list; Community.list = state.effects; const res = Community.check(rec); Community.list = saveList;
+          if (!res.ok) throw new Error(res.problems[0]);
+          const e = Community.entryOf(j); if (state.effects.some(x => x.id === e.id)) throw new Error('it is already in the library'); state.effects.push(e); msgs.push('Added “' + e.name + '” by ' + e.author + (res.near && res.near.score >= 0.5 ? ' (closest: ' + res.near.name + ', ' + Math.round(res.near.score * 100) + '%)' : '') + '.');
+        } catch (err) { msgs.push(f.name + ': ' + (err.message || 'could not be read')); } }
+      note.textContent = msgs.join(' '); draw(); }, true);
+    draw();
+    this.modal('Library owner tools', el('div', {}, el('p', { class: 'hint' }, 'Only the person who runs the site needs this. Add the submission files you accept, save the library file, then upload it to the site as community.json, next to index.html.'), list, note),
+      [['Add accepted submissions', add, 'primary'], ['Save community.json', () => saveBlob(new Blob([JSON.stringify({ v: 1, updated: new Date().toISOString().slice(0, 10), effects: state.effects }, null, 1)], { type: 'application/json' }), 'community.json')], ['Close', () => this.closeModal()]]);
+  }
+});
 
 </script>
 <script>
@@ -13618,7 +13823,7 @@ Object.assign(UI, {
   panel_custom(body) {
     const mine = EffectLib.list().filter(d => d.lab || !d.builtin);
     body.append(el('p', { class: 'hint' }, 'Your own effects live here. Import an effect file someone shared, or make one in Effect Lab.'),
-      el('div', { class: 'btnrow' }, el('button', { class: 'btn primary', onclick: () => this.importCustom() }, 'Import effect file'), el('button', { class: 'btn', onclick: () => this.effectLab() }, 'Open Effect Lab'), el('button', { class: 'btn', onclick: () => this.effectHelp() }, 'File types and AI prompt')),
+      el('div', { class: 'btnrow' }, el('button', { class: 'btn primary', onclick: () => this.importCustom() }, 'Import effect file'), el('button', { class: 'btn', onclick: () => this.effectLab() }, 'Open Effect Lab'), el('button', { class: 'btn', onclick: () => this.effectHelp() }, 'File types and AI prompt'), el('button', { class: 'btn', onclick: () => this.communityLibrary() }, 'Community effects')),
       el('p', { class: 'hint' }, 'Accepted: .tfx (TwoFrame effects), ISF shaders, mainImage shaders and plain GLSL (.fs, .frag, .glsl, .txt), .xml and .zip effect packs, .cube colour tables. To choose the kind yourself or edit the code first, open it in Effect Lab.'));
     if (!mine.length) { body.append(el('p', { class: 'hint' }, 'Nothing imported yet.')); return; }
     const grid = el('div', { class: 'fxgrid' });
