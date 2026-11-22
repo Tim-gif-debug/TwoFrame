@@ -742,6 +742,12 @@ body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
 .cagree{display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:14px}
 .cagree input{width:20px;height:20px;flex:none}
 
+/* fewer settings at first */
+.fxmore.shut{display:none}
+.morebtn{margin:6px 0 2px;align-self:flex-start}
+.simplebig{display:flex;flex-direction:column;gap:10px;margin:8px 0}
+.simplebig .btn{min-height:44px}
+
 </style>
 </head>
 <body class="lay-mobile">
@@ -771,7 +777,7 @@ body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
     <b id="projName" title="Project settings" onclick="UI.openTool('canvas')"></b>
     <span class="grow"></span>
     <span id="specChip" class="chip ghost d-only"></span>
-    <button class="chip" id="qualityBtn" title="Preview quality (Full, Half, Quarter)" onclick="UI.cycleQuality()">Half</button>
+    <button class="chip" id="qualityBtn" title="Preview quality (Auto, Full, Half, Quarter)" onclick="UI.cycleQuality()">Auto</button>
     <button class="ib sm" title="Canvas and settings" aria-label="Settings" onclick="UI.openTool('canvas')" data-icon="gear"></button>
     <button class="exportbtn" onclick="UI.exportDialog()"><span data-icon="download"></span><span>Export</span></button>
   </header>
@@ -6341,9 +6347,11 @@ const Renderer = {
     const E = engine, up = this.project.upscale || 'sharp';
     const tw = tex._w || m.w, th = tex._h || m.h;
     const mag = this.renderScale() * Math.abs((tr.scale ?? 100) / 100) * (m.w / Math.max(1, tw));
-    if (up === 'off' || mode === 'play' || mag < 1.12 || !tw || this.noUpscale) { E.drawLayerTex(tex, m.w, m.h, tr, target, crop); return; }
-    E.drawLayerTex(tex, m.w, m.h, tr, target, crop, [tw, th]);
-    const tmp = this.R('up_sharp'); E.sharpen(target, tmp, up === 'max' ? 1 : 0.7); E.copy(tmp, target);
+    // During playback it runs too (so play and pause look alike), unless the device is already falling behind.
+    const busy = mode === 'play' && ((typeof App !== 'undefined' && (App._adapt || 1) < 1) || (typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM));
+    if (up === 'off' || busy || mag < 1.12 || !tw || this.noUpscale) { E.drawLayerTex(tex, m.w, m.h, tr, target, crop); return; }
+    // Rebuilt into a spare picture, then sharpened straight into place (one full-size pass fewer than before).
+    const tmp = this.R('up_sharp'); E.clear(tmp); E.drawLayerTex(tex, m.w, m.h, tr, tmp, crop, [tw, th]); E.sharpen(tmp, target, up === 'max' ? 1 : 0.7);
     this.upscaled = (this.upscaled || 0) + 1;
   },
 
@@ -6907,6 +6915,13 @@ const Sound = {
   },
 
   // ---- export: everything mixed down to one stereo buffer ---------------------
+  // Why a project has no sound to export, in words.
+  whySilent(p) {
+    const vids = p.layers.filter(l => (l.type === 'video' || l.type === 'audio') && !l.hidden); if (!vids.length) return 'there are no video or audio clips';
+    const why = []; for (const l of vids) { const m = Media.items.get(l.mediaId), n = (m && m.name) || l.name || 'a clip';
+      if (!m) why.push(n + ' is missing'); else if (!m.audio) why.push(m.noAudioTrack ? n + ' has no sound track' : n + ': its sound could not be read' + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); else if (l.muted) why.push(n + ' is muted'); else if (!this.audible(l, p)) why.push(n + ' is turned off or at zero volume'); else if (l.video && l.video.freeze != null) why.push(n + ' is a freeze frame'); }
+    return why.length ? [...new Set(why)].slice(0, 4).join('; ') : 'no clip has sound';
+  },
   async mix(p) {
     // Sound that is still being read (a big file just added, or a project just reopened) is waited for.
     // Exporting during that time used to give a silent file.
@@ -7343,6 +7358,56 @@ function findMixStart(mix, got, lead) {
   for (let lag = Math.max(0, lead - 0.45); lag <= lead + 0.45; lag += 0.0005) { const sc = score(lag); if (sc > bs) { bs = sc; bl = lag; } }
   void k; return bs > 0 ? bl : null;
 }
+// ---- The mix as compressed packets, from the browser's audio encoder ---------
+// Returns { codec, rate, ch, desc, frames: [{ data, dur (microseconds) }], checked } or null. Reasons for a null go into `tried`.
+async function encodeMix(buf, codec, tried) {
+  const label = codec === 'aac' ? 'AAC' : 'Opus';
+  try {
+    if (!('AudioEncoder' in window) || !('AudioData' in window)) { tried.push(label + ': this browser has no audio encoder'); return null; }
+    const base = { codec: codec === 'aac' ? 'mp4a.40.2' : 'opus', sampleRate: 48000, numberOfChannels: 2, bitrate: codec === 'aac' ? 192000 : 160000 }; let cfg = null;
+    for (const c of codec === 'aac' ? [{ ...base, aac: { format: 'aac' } }, base, { ...base, bitrate: 128000 }] : [base]) { try { if ((await AudioEncoder.isConfigSupported(c)).supported) { cfg = c; break; } } catch (e) { } }
+    if (!cfg) { tried.push(label + ': the encoder does not offer it'); return null; }
+    const frames = []; let desc = null, err = null;
+    const enc = new AudioEncoder({ output: (c, m) => { try { const d = new Uint8Array(c.byteLength); c.copyTo(d); frames.push({ data: d, dur: c.duration || 0, ts: c.timestamp }); const dc = m && m.decoderConfig && m.decoderConfig.description; if (dc && !desc) desc = new Uint8Array(dc.buffer ? dc.buffer.slice(dc.byteOffset, dc.byteOffset + dc.byteLength) : dc.slice(0)); } catch (e) { err = e; } }, error: (e) => { err = e; } });
+    enc.configure(cfg);
+    const ch0 = buf.getChannelData(0), ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : ch0, step = 4800;
+    for (let off = 0; off < buf.length && !err; off += step) { const n = Math.min(step, buf.length - off), data = new Float32Array(n * 2); data.set(ch0.subarray(off, off + n), 0); data.set(ch1.subarray(off, off + n), n);
+      const ad = new AudioData({ format: 'f32-planar', sampleRate: 48000, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(off / 48000 * 1e6), data }); enc.encode(ad); ad.close(); if (enc.encodeQueueSize > 16) await sleep(2); }
+    if (!err) await enc.flush(); try { enc.close(); } catch (e) { }
+    if (err) { tried.push(label + ': the encoder stopped (' + (err.message || err) + ')'); return null; }
+    if (!frames.length) { tried.push(label + ': the encoder gave no data'); return null; }
+    const fd = Math.round((codec === 'aac' ? 1024 : 960) / 48000 * 1e6); for (const f of frames) if (!f.dur) f.dur = fd;
+    const pack = { codec, rate: 48000, ch: 2, desc, frames, checked: false };
+    if (codec === 'aac') {
+      // Some encoders hand out ADTS packets (each with its own small header) instead of bare AAC. The header is taken off.
+      const f0 = frames[0].data; if (f0.length > 7 && f0[0] === 0xFF && (f0[1] & 0xF6) === 0xF0) { const b = f0; if (!desc) { const aot = ((b[2] >> 6) & 3) + 1, fi = (b[2] >> 2) & 15, cc = ((b[2] & 1) << 2) | (b[3] >> 6); desc = new Uint8Array([(aot << 3) | (fi >> 1), ((fi & 1) << 7) | (cc << 3)]); }
+        for (const f of frames) { const h = (f.data[1] & 1) ? 7 : 9; if (f.data[0] === 0xFF && (f.data[1] & 0xF6) === 0xF0) f.data = f.data.subarray(h); } }
+      if (!desc) desc = new Uint8Array([0x11, 0x90]);   // AAC-LC, 48 kHz, stereo: what was asked for
+      pack.desc = desc;
+      const ok = await checkAAC(pack, buf); if (ok === false) { tried.push('AAC: the encoded sound came back silent or the wrong length'); return null; } pack.checked = ok === true;
+    }
+    return pack;
+  } catch (e) { tried.push(label + ': ' + (e.message || e)); return null; }
+}
+// Decodes the first part of an AAC packet list again and compares it with the mix. true = fine, false = wrong, null = could not be checked here.
+async function checkAAC(pack, mix) {
+  try {
+    const ctx = Media.getAudioCtx(); if (!ctx) return null; const d = pack.desc, aot = d[0] >> 3, fi = ((d[0] & 7) << 1) | (d[1] >> 7), cc = (d[1] >> 3) & 15; if (aot < 1 || aot > 4 || fi > 12 || !cc) return null;
+    let secs = 0, n = 0, total = 0; for (const f of pack.frames) { if (secs > 20) break; secs += f.dur / 1e6; total += f.data.length + 7; n++; }
+    const out = new Uint8Array(total); let o = 0; for (let k = 0; k < n; k++) { const f = pack.frames[k].data, len = f.length + 7; out[o] = 0xFF; out[o + 1] = 0xF1; out[o + 2] = ((aot - 1) << 6) | (fi << 2) | (cc >> 2); out[o + 3] = ((cc & 3) << 6) | (len >> 11); out[o + 4] = (len >> 3) & 255; out[o + 5] = ((len & 7) << 5) | 0x1F; out[o + 6] = 0xFC; out.set(f, o + 7); o += len; }
+    let got; try { got = await new Promise((res, rej) => { const pr = ctx.decodeAudioData(out.buffer, res, rej); if (pr && pr.catch) pr.catch(rej); }); } catch (e) { return null; }
+    if (!got || Math.abs(got.duration - secs) > Math.max(0.3, secs * 0.15)) return false;
+    const rms = (b, lim) => { const x = b.getChannelData(0), m = Math.min(x.length, Math.round(lim * b.sampleRate)); let e = 0; for (let i = 0; i < m; i += 5) e += x[i] * x[i]; return Math.sqrt(e / Math.max(1, m / 5)); };
+    const want = rms(mix, secs), have = rms(got, secs); if (want < 0.003) return null;
+    return have > want * 0.3 && have < want * 3;
+  } catch (e) { return null; }
+}
+function packFromRecording(res, duration) {
+  if (!res || !res.frames || !res.frames.length) return null;
+  const frames = []; let seen = 0; const off = (res.offset || 0) + (res.codec === 'aac' ? res.frames[0].dur : 0);
+  for (const f of res.frames) { seen += f.dur; if (seen - f.dur / 2 < off) continue; frames.push({ data: f.data, dur: Math.round(f.dur * 1e6) }); }
+  return frames.length ? { codec: res.codec, rate: res.rate, ch: res.ch, desc: res.desc, frames, how: 'sound recorded in real time' } : null;
+}
 function recordMixedAudio(audioBuf) {
   const LEAD = 0.6;
   try {
@@ -7374,6 +7439,7 @@ function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type
 const Exporter = {
   busy: false, cancel: false,
   async run(p, opts, onProgress) {
+    const tStart = performance.now();
     await Fonts.ready(p);
     // The video ends where the last clip ends. Empty time after it is not exported (it used to be rendered as black frames).
     { const end = p.layers.reduce((m, l) => l.hidden ? m : Math.max(m, l.start + l.dur), 0); if (end > 0.05 && end < p.duration - 1e-3 && !opts.fullLength) p = { ...p, duration: Math.ceil(end * (opts.fps || p.fps) - 1e-6) / (opts.fps || p.fps) }; }
@@ -7394,22 +7460,28 @@ const Exporter = {
     if (!codec) codec = await pickVideoCodec(W, H, fps, bitrate);
     if (!codec) { this.busy = false; throw new Error(`H.264 at ${W}×${H} isn’t supported on this device. Try a lower resolution.`); }
 
-    // Audio: AAC first (plays everywhere, including iPhone Photos), Opus as a fallback.
-    let audioBuf = null, audioOk = false, aCodec = null, recJob = null, aRate = 48000, aCh = 2, audioNote = '';
+    // Sound. It is encoded and checked BEFORE the picture, so a problem is known early and the
+    // next way can be tried. Order: AAC from the browser's encoder (checked by decoding it again),
+    // then the system recorder, then Opus. iPhones only play AAC in Photos, so Opus comes last.
+    let audioBuf = null, audioOk = false, aCodec = null, recJob = null, aRate = 48000, aCh = 2, audioNote = '', audioPack = null; const tried = [];
+    const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Firefox/.test(navigator.userAgent));
     if (opts.audio !== false) {
-      try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); }
-      if (audioBuf && 'AudioEncoder' in window) {
-        for (const [enc, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
-          try { if ((await AudioEncoder.isConfigSupported({ codec: enc, sampleRate: 48000, numberOfChannels: 2, bitrate: 192000 })).supported) { aCodec = [enc, mux]; break; } } catch (e) { }
+      try { audioBuf = await Sound.mix(p); } catch (e) { console.warn('audio mix failed', e); tried.push('the sound could not be mixed (' + (e.message || e) + ')'); }
+      if (audioBuf) {
+        if (opts.audioPack) audioPack = opts.audioPack;
+        if (!audioPack && !opts.recordAudio) audioPack = await encodeMix(audioBuf, 'aac', tried);
+        if (!audioPack && !apple && !opts.recordAudio) audioPack = await encodeMix(audioBuf, 'opus', tried);
+        if (!audioPack) {
+          recJob = recordMixedAudio(audioBuf); let info = recJob && await recJob.info;
+          if (recJob && !info && apple) {
+            // The recorder gave no header early. Let it finish first (this takes as long as the video is), then go on.
+            let res; recJob.done.then(r => { res = r; }); while (res === undefined) { if (this.cancel) { recJob.cancel(); this.busy = false; throw new Error('Export cancelled'); } onProgress(0); await sleep(150); }
+            audioPack = packFromRecording(res, p.duration); if (!audioPack) tried.push('the system recorder gave nothing usable'); recJob = null;
+          } else if (info && (info.codec === 'aac' || !apple)) { audioOk = true; aCodec = [null, info.codec]; aRate = info.rate; aCh = info.ch; }
+          else { if (recJob) recJob.cancel(); tried.push(recJob ? (info ? 'the system recorder makes ' + info.codec + ', which iPhones do not play' : 'the system recorder did not start') : 'no system recorder for sound'); recJob = null; }
         }
-        audioOk = !!aCodec;
-      }
-      // No audio encoder (iPhones before iOS 26, some Android browsers): the mix is
-      // recorded by the system's own recorder while the picture is encoded, and its
-      // packets are copied into the file. Before this the export came out silent.
-      if (audioBuf && (!audioOk || opts.recordAudio)) {
-        recJob = recordMixedAudio(audioBuf); const info = recJob && await recJob.info;
-        if (info) { audioOk = true; aCodec = [null, info.codec]; aRate = info.rate; aCh = info.ch; } else { if (recJob) recJob.cancel(); recJob = null; if (opts.recordAudio) audioOk = false; }
+        if (!audioPack && !recJob) audioPack = await encodeMix(audioBuf, 'opus', tried);
+        if (audioPack) { audioOk = true; aCodec = [null, audioPack.codec]; aRate = audioPack.rate; aCh = audioPack.ch; }
       }
     }
 
@@ -7432,19 +7504,23 @@ const Exporter = {
     engine.setSize(W, H, p.width, p.height);
     Runtime.clearCaches();
     const N = Math.max(1, Math.round(p.duration * fps));
+    let tPic = 0, tEnc = 0; const tAll = performance.now() - 0, tSound = tAll - tStart;
     try {
       for (let i = 0; i < N; i++) {
         if (this.cancel) throw new Error('Export cancelled');
         if (encErr) throw encErr;
+        const tf0 = performance.now();
         await Renderer.frame(p, i / fps, 'exact', () => {
           const vf = new VideoFrame(engine.canvas, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
           venc.encode(vf, { keyFrame: i % Math.round(fps * 2) === 0 });
           vf.close();
         });
+        const tf1 = performance.now(); tPic += tf1 - tf0;
         while (venc.encodeQueueSize > 6) await sleep(2);
+        tEnc += performance.now() - tf1;
         onProgress((i + 1) / N * (audioOk ? 0.95 : 1));
       }
-      await venc.flush();
+      { const t = performance.now(); await venc.flush(); tEnc += performance.now() - t; }
       if (encErr) throw encErr;
 
       if (recJob) {
@@ -7453,26 +7529,16 @@ const Exporter = {
         while (res === undefined) { if (this.cancel) throw new Error('Export cancelled'); onProgress(0.95 + 0.05 * Math.min(1, (performance.now() - recJob.t0) / 1000 / Math.max(0.5, audioBuf.duration))); await sleep(120); }
         const lim = Math.round(p.duration * 1e6); let ts = 0, first = true;
         if (res && res.frames.length) { let seen = 0; const off = (res.offset || 0) + (res.codec === 'aac' ? res.frames[0].dur : 0); for (const f of res.frames) { seen += f.dur; if (seen - f.dur / 2 < off) continue; const du = Math.round(f.dur * 1e6); if (ts > lim) break; muxer.addAudioChunkRaw(f.data, 'key', ts, du, first && res.desc ? { decoderConfig: { codec: res.codec === 'aac' ? 'mp4a.40.2' : 'opus', sampleRate: aRate, numberOfChannels: aCh, description: res.desc } } : undefined); first = false; ts += du; } audioNote = ', sound recorded in real time'; }
-        else { audioOk = false; audioNote = ''; }
-      } else if (audioOk && audioBuf) {
-        const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: (e) => { encErr = e; } });
-        aenc.configure({ codec: aCodec[0], sampleRate: 48000, numberOfChannels: 2, bitrate: 192000 });
-        const ch0 = audioBuf.getChannelData(0), ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
-        const step = 4800;
-        for (let off = 0; off < audioBuf.length; off += step) {
-          const n = Math.min(step, audioBuf.length - off);
-          const data = new Float32Array(n * 2);
-          data.set(ch0.subarray(off, off + n), 0); data.set(ch1.subarray(off, off + n), n);
-          const ad = new AudioData({ format: 'f32-planar', sampleRate: 48000, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(off / 48000 * 1e6), data });
-          aenc.encode(ad); ad.close();
-          if (aenc.encodeQueueSize > 16) await sleep(2);
-        }
-        await aenc.flush();
-        if (encErr) throw encErr;
+        else { audioOk = false; audioNote = ''; tried.push('the recorded sound could not be read back'); }
+      }
+      if (audioPack) {
+        let ts = 0, first = true; const lim = Math.round(p.duration * 1e6) + 30000;
+        for (const f of audioPack.frames) { if (ts > lim) break; muxer.addAudioChunkRaw(f.data, 'key', ts, f.dur, first ? { decoderConfig: { codec: audioPack.codec === 'aac' ? 'mp4a.40.2' : 'opus', sampleRate: aRate, numberOfChannels: aCh, ...(audioPack.desc ? { description: audioPack.desc } : {}) } } : undefined); first = false; ts += f.dur; }
+        audioNote = audioPack.how ? ', ' + audioPack.how : '';
       }
       muxer.finalize();
       onProgress(1);
-      return { blob: new Blob([target.buffer], { type: 'video/mp4' }), W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + audioNote + ')', silent: silentClips(p) };
+      return { blob: new Blob([target.buffer], { type: 'video/mp4' }), W, H, codec, audio: audioOk, audioCodec: aCodec ? aCodec[1] : null, hadAudio: !!audioBuf, timing: (() => { const sec = (ms) => (ms / 1000).toFixed(ms < 9500 ? 1 : 0) + ' s', all = performance.now() - tStart; return `Took ${sec(all)} for ${p.duration.toFixed(1)} s of video: drawing the frames ${sec(tPic)}, waiting for the video encoder ${sec(tEnc)}, sound and set-up ${sec(Math.max(0, all - tPic - tEnc))}.`; })(), audioInfo: audioOk ? 'Sound: ' + (aCodec[1] === 'aac' ? 'AAC' : 'Opus' + (apple ? ' (this may not play in Photos on an iPhone)' : '')) + (audioPack && audioPack.checked ? ', checked' : '') + '.' : opts.audio === false ? '' : 'No sound in this file: ' + (audioBuf ? (tried.join('; ') || 'no way to encode sound was found') : (tried[0] || Sound.whySilent(p))) + '.', method: 'WebCodecs (' + codecName + (audioOk ? (aCodec[1] === 'aac' ? ' + AAC' : ' + Opus') : '') + audioNote + ')', silent: silentClips(p) };
     } finally {
       try { venc.close(); } catch (e) { }
       try { recJob && recJob.cancel(); } catch (e) { }
@@ -7758,7 +7824,8 @@ const App = {
       if (r.value && r.value.xml) { try { EffectLib.add(parseEffectXML(r.value.xml, r.value.name)); } catch (e) { console.warn(e); } }
     }
     await Promise.all([Luts.loadAll(), Presets.loadAll(), Fonts.loadSaved()]);
-    try { this.quality = localStorage.getItem('tf.quality') || 'half'; this.snapping = localStorage.getItem('tf.snap') !== '0'; } catch (e) { }
+    // 'auto' fits the preview to the screen's own pixels. Older saved choices of Half are moved to it once.
+    try { let q = localStorage.getItem('tf.quality'); if (localStorage.getItem('tf.qauto') !== '1') { localStorage.setItem('tf.qauto', '1'); if (!q || q === 'half') { q = 'auto'; localStorage.setItem('tf.quality', q); } } this.quality = q || 'auto'; this.snapping = localStorage.getItem('tf.snap') !== '0'; } catch (e) { }
     Layout.init();
     UI.init();
     UI.showHome();
@@ -7874,8 +7941,15 @@ const App = {
   // Preview resolution: Full = project size (capped at 1920), Half, Quarter.
   setPreviewQuality() {
     const p = this.project; if (!p) return;
-    const f = { full: 1, half: 0.5, quarter: 0.25 }[this.quality] || 0.5;
-    const maxDim = Math.min(1920, Math.max(p.width, p.height) * f) * (Player.playing ? (this._adapt || 1) * (this.quality === 'full' ? 0.75 : 1) : 1);
+    let f = { full: 1, half: 0.5, quarter: 0.25 }[this.quality];
+    if (f === undefined) {
+      // Auto: as many pixels as the preview really shows on this screen, in a few fixed steps so the size doesn't keep changing.
+      f = 0.5;
+      try { const cv = engine.canvas, dpr = Math.min(window.devicePixelRatio || 1, typeof TF_LOWMEM !== 'undefined' && TF_LOWMEM ? 2 : 3), shown = Math.max(cv.clientWidth * (p.width >= p.height ? 1 : p.height / p.width), cv.clientHeight * (p.height >= p.width ? 1 : p.width / p.height)) * dpr;
+        if (shown > 50) { const need = shown / Math.max(p.width, p.height); f = [0.25, 0.375, 0.5, 0.75, 1].find(x => x >= need * 0.92) || 1; } } catch (e) { }
+    }
+    // The size only drops during playback when the device is really falling behind (see the adaptive preview), so play and pause look the same.
+    const maxDim = Math.min(1920, Math.max(p.width, p.height) * f) * (Player.playing ? (this._adapt || 1) : 1);
     const k = Math.min(1, maxDim / Math.max(p.width, p.height));
     const w = Math.round(p.width * k), h = Math.round(p.height * k);
     if (w !== engine.width || h !== engine.height || engine.compW !== p.width || engine.compH !== p.height) {
@@ -8528,7 +8602,7 @@ const UI = {
   updateTransport() {
     const b = $('#playBtn'); if (b) b.innerHTML = Player.playing ? ICON.pause : ICON.play;
     $('#loopBtn')?.classList.toggle('on', App.loop);
-    const q = $('#qualityBtn'); if (q) q.textContent = { full: 'Full', half: 'Half', quarter: '¼' }[App.quality];
+    const q = $('#qualityBtn'); if (q) q.textContent = { auto: 'Auto', full: 'Full', half: 'Half', quarter: '¼' }[App.quality] || 'Auto';
     $('#snapBtn')?.classList.toggle('on', App.snapping);
     $('#magBtn')?.classList.toggle('on', !!(App.project && App.project.magnetic));
     $('#multiBtn')?.classList.toggle('on', this.multi);
@@ -8950,6 +9024,7 @@ const UI = {
       const err = def.kind === 'shader' ? (engine.effectProgram(def), engine.effectError(def)) : null;
       if (err) card.appendChild(el('p', { class: 'warn' }, 'This effect’s shader failed to compile: ' + err.split('\n')[0]));
       if (fxi.open) {
+        const n0 = card.children.length;
         for (const p of def.params) {
           if (p.kind === 'texture') continue;
           if (p.kind === 'section') { if (p.label && !/GOLD MOTION/i.test(p.label)) card.appendChild(el('div', { class: 'sect' }, p.label)); continue; }
@@ -8965,6 +9040,12 @@ const UI = {
               el('button', { class: 'btn sm', onclick: () => this.pickFiles('.cube', async ([f]) => { try { const id = await Luts.add(f.name.replace(/\.cube$/i, ''), await f.text()); App.setProp(l, path, id); this.refreshPanel(); } catch (e) { toast(e.message); } }) }, 'Import .cube')));
           }
         }
+        // Long lists of settings: the main ones show, the rest sit behind "More settings".
+        { const rows = Array.from(card.children).slice(n0), ctr = rows.filter(r => !r.classList.contains('sect')), main = def.main || 5;
+          if (ctr.length > main + 2) { this._fxMore = this._fxMore || new Set(); const open = this._fxMore.has(fxi.uid), box = el('div', { class: 'fxmore' + (open ? '' : ' shut') }); let seen = 0, started = false;
+            for (const r of rows) { if (!started) { if (!r.classList.contains('sect')) { seen++; if (seen > main) started = true; } else if (seen >= main) started = true; } if (started) box.appendChild(r); }
+            const tog = el('button', { class: 'btn sm morebtn', onclick: () => { const o = box.classList.toggle('shut'); if (o) this._fxMore.delete(fxi.uid); else this._fxMore.add(fxi.uid); tog.textContent = o ? `More settings (${ctr.length - main})` : 'Fewer settings'; } }, open ? 'Fewer settings' : `More settings (${ctr.length - main})`);
+            card.append(tog, box); } }
         if (def.desc) card.appendChild(el('p', { class: 'hint' }, def.desc));
       }
       body.appendChild(card);
@@ -9118,7 +9199,7 @@ const UI = {
     this.section(body, 'Settings');
     body.append(
       this.row('Layout', el('select', { onchange: (e) => { Layout.override = e.target.value; } }, [['auto', 'Automatic'], ['desktop', 'Force desktop layout'], ['mobile', 'Force mobile layout']].map(([v, n]) => el('option', { value: v, selected: Layout.override === v }, n)))),
-      this.row('Preview quality', el('select', { onchange: (e) => App.setQuality(e.target.value) }, [['full', 'Full'], ['half', 'Half'], ['quarter', 'Quarter']].map(([v, n]) => el('option', { value: v, selected: App.quality === v }, n)))),
+      this.row('Preview quality', el('select', { onchange: (e) => App.setQuality(e.target.value) }, [['auto', 'Auto (fits this screen)'], ['full', 'Full'], ['half', 'Half'], ['quarter', 'Quarter']].map(([v, n]) => el('option', { value: v, selected: App.quality === v }, n)))),
       this.row('Snapping', el('input', { type: 'checkbox', class: 'tog', checked: App.snapping, onchange: (e) => { App.snapping = e.target.checked; try { localStorage.setItem('tf.snap', App.snapping ? '1' : '0'); } catch (er) { } this.updateTransport(); } })),
       this.row('Magnetic main track', el('input', { type: 'checkbox', class: 'tog', checked: !!p.magnetic, onchange: (e) => { App.change(pp => { pp.magnetic = e.target.checked; App.compactMain(pp); }); this.refresh(); } })),
       el('p', { class: 'hint' }, `Detected: ${Layout.device}, ${Layout.mode} layout. WebGL2 ${engine.floatRT ? 'with' : 'without'} float targets. Export: ${'VideoEncoder' in window ? 'WebCodecs' : 'MediaRecorder'}.`));
@@ -9246,7 +9327,9 @@ const UI = {
       const url = URL.createObjectURL(res.blob);
       this.modal('Export finished', el('div', {},
         el('video', { src: url, controls: true, playsinline: true, class: 'result' }),
-        el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.${res.hadAudio && !res.audio ? ' Audio was skipped because this browser can’t encode audio.' : ''}${res.silent && res.silent.length ? ' No sound could be read from: ' + res.silent.join(', ') + '.' : ''}`),
+        el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.`),
+        res.timing ? el('p', { class: 'hint' }, res.timing) : null,
+        res.audioInfo !== undefined ? el('p', { class: 'hint', style: res.audio ? '' : 'color:#ffb454;font-weight:600' }, res.audioInfo + (res.audio && res.silent && res.silent.length ? ' No sound could be read from: ' + res.silent.join(', ') + '.' : '')) : (res.hadAudio && !res.audio ? el('p', { class: 'hint' }, 'Audio was skipped because this browser can’t encode audio.') : null),
         el('p', { class: 'hint' }, 'On iPhone, Save opens the share sheet: choose Save Video to put it in Photos.')),
         [['Close', () => { URL.revokeObjectURL(url); this.closeModal(); }], ['Save video', async () => { const r = await saveBlob(res.blob, name); if (r === 'downloaded') toast('Saved to your downloads.'); else if (r === 'saved' || r === 'shared') toast('Saved.'); }, 'primary']]);
     } catch (e) {
@@ -11974,24 +12057,46 @@ Object.assign(UI, {
     const phone = Layout.device === 'phone';
     const run = async (every) => {
       try { this.busy('Loading the face model (first time only)…'); const r = await FaceAI.analyze(l, every, (f) => this.busy(`Analyzing faces… ${Math.round(f * 100)}%`, () => { FaceAI.cancel = true; }));
-        this.busy(null); if (!l.effects.some(f => f.defId === 'tf.retouch')) { App.addEffect('tf.retouch'); const f = l.effects.find(x => x.defId === 'tf.retouch'); App.change(() => Object.assign(f.params, RETOUCH_PRESETS.Natural), ''); }
+        this.busy(null); if (!l.effects.some(f => f.defId === 'tf.retouch')) { App.addEffect('tf.retouch'); const f = l.effects.find(x => x.defId === 'tf.retouch'); App.change(() => { Object.assign(f.params, RETOUCH_PRESETS.Natural); f.look = { name: 'Natural', amt: 1 }; }, ''); }
         toast(r.faces ? `Found ${r.faces} face${r.faces === 1 ? '' : 's'}.` : 'No faces found in this clip.'); }
       catch (e) { this.busy(null); this.modal('Face retouch', el('p', {}, e.message || String(e)), [['OK', () => this.closeModal()]]); }
-      this.refresh();
+      this.refresh(); if (App.layer() === l && FaceAI.data.get(l.mediaId)) this.openTool('retouch');
     };
-    body.append(el('p', { class: 'hint' }, rec ? `Faces are saved for ${Object.keys(rec.frames).length} frame${Object.keys(rec.frames).length === 1 ? '' : 's'} of this clip (up to ${Math.max(0, ...Object.values(rec.frames).map(f => f.length))} people).` : 'Step 1: find the faces. This runs on your device and is saved with the clip, so it only happens once.'),
-      el('div', { class: 'btnrow' }, el('button', { class: 'btn' + (rec ? '' : ' primary'), onclick: () => run(phone ? 2 : 1) }, rec ? 'Analyze again' : 'Analyze faces'),
-        l.type === 'video' ? el('button', { class: 'btn sm', onclick: () => run(phone ? 1 : 2) }, phone ? 'Every frame (slower, more exact)' : 'Every 2nd frame (faster)') : null,
-        null));
-    if (!fx) { if (rec) body.appendChild(el('div', { class: 'btnrow' }, el('button', { class: 'btn primary', onclick: () => { App.addEffect('tf.retouch'); this.refresh(); } }, 'Add retouch'))); return; }
-    const def = EffectLib.get('tf.retouch'), mine = this.myRetouch(), apply = (vals) => { App._label = 'Retouch preset'; App.change(() => { for (const p of def.params) if (p.id && p.kind === 'spinner' && p.id !== 'compare') fx.params[p.id] = vals[p.id] ?? (['smoothamt', 'detail', 'bright', 'shine', 'circles', 'eyebright', 'teeth'].includes(p.id) ? fx.params[p.id] : 0); }); this.refreshPanel(); };
+    // ---- the simple view: one tap finds the faces, then a look and one strength slider ----
+    const count = rec ? Math.max(0, ...Object.values(rec.frames).map(f => f.length)) : 0;
+    if (!rec) {
+      // Opening Retouch starts the face search by itself, once per clip.
+      this._faceAuto = this._faceAuto || new Set();
+      if (m && !this._faceLoad && !this._faceAuto.has(m.id)) { this._faceAuto.add(m.id); setTimeout(() => { if (App.layer() === l && !FaceAI.data.get(m.id)) run(phone ? 2 : 1); }, 350); }
+      body.append(el('p', { class: 'hint' }, 'Retouch finds the faces in this clip first. It runs on your device and only happens once per clip.'),
+        el('div', { class: 'simplebig' }, el('button', { class: 'btn primary', onclick: () => run(phone ? 2 : 1) }, 'Find faces and retouch')));
+      return;
+    }
+    if (!fx) { body.append(el('p', { class: 'hint' }, count ? `Found ${count} ${count === 1 ? 'person' : 'people'} in this clip.` : 'No faces were found in this clip.'), el('div', { class: 'simplebig' }, el('button', { class: 'btn primary', onclick: () => { App.addEffect('tf.retouch'); const f = l.effects.find(x => x.defId === 'tf.retouch'); App.change(() => { Object.assign(f.params, RETOUCH_PRESETS.Natural); f.look = { name: 'Natural', amt: 1 }; }, ''); this.refresh(); this.openTool('retouch'); } }, 'Add retouch'), el('button', { class: 'btn', onclick: () => run(phone ? 1 : 2) }, 'Search again'))); return; }
+    const def = EffectLib.get('tf.retouch'), mine = this.myRetouch(), SP = def.params.filter(p => p.id && p.kind === 'spinner' && p.id !== 'compare').map(p => p.id);
+    const setLook = (name, vals, amt) => { App._label = 'Retouch look'; App.change(() => { for (const id of SP) fx.params[id] = Math.round((vals[id] || 0) * amt * 1000) / 1000; fx.look = { name, amt, vals: RETOUCH_PRESETS[name] ? undefined : { ...vals } }; }, 'look'); };
+    const lookVals = () => fx.look && (RETOUCH_PRESETS[fx.look.name] || fx.look.vals || mine[fx.look.name]);
+    const apply = (vals, name) => { setLook(name, vals, (fx.look && fx.look.amt) || 1); this.refreshPanel(); };
     const hold = el('button', { class: 'btn sm' }, 'Hold to see before');
     const show = (on) => { fx.enabled = on; App.requestRender(); };
     hold.addEventListener('pointerdown', () => show(false)); for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) hold.addEventListener(ev, () => show(true));
-    body.append(el('div', { class: 'sect' }, 'Presets'), el('div', { class: 'chips' }, Object.entries(RETOUCH_PRESETS).map(([n, v]) => el('button', { class: 'chip', onclick: () => apply(v) }, n)),
-      Object.entries(mine).map(([n, v]) => el('button', { class: 'chip mine', onclick: () => apply(v), oncontextmenu: (e) => { e.preventDefault(); this.confirm(`Delete the preset “${n}”?`, () => { const o = this.myRetouch(); delete o[n]; localStorage.setItem('tf.retouchPresets', JSON.stringify(o)); this.refreshPanel(); }); } }, '★ ' + n)),
-      el('button', { class: 'chip', onclick: () => this.ask('Name this retouch preset', 'My look', (n) => { const o = this.myRetouch(); o[n] = { ...fx.params }; delete o[n].compare; delete o[n].who; try { localStorage.setItem('tf.retouchPresets', JSON.stringify(o)); } catch (e) { } this.refreshPanel(); }) }, '+ Save mine')),
-      el('div', { class: 'btnrow' }, hold, el('span', { class: 'hint' }, 'or drag Before / After Split at the bottom.')));
+    const chip = (n, v, cls) => el('button', { class: 'chip' + (cls || '') + (fx.look && fx.look.name === n ? ' on' : ''), onclick: () => apply(v, n) }, n);
+    const amtNow = Math.round(((fx.look && fx.look.amt) || 1) * 100), amtLbl = el('span', { class: 'hint' }, amtNow + '%');
+    const amt = el('input', { type: 'range', min: 0, max: 150, step: 5, value: amtNow, style: 'flex:1', oninput: (e) => { const a = +e.target.value / 100, v = lookVals(); amtLbl.textContent = e.target.value + '%'; if (v) setLook(fx.look.name, v, a); App.requestRender(); } });
+    body.append(el('div', { class: 'sect' }, 'Look'),
+      el('div', { class: 'chips' }, Object.entries(RETOUCH_PRESETS).map(([n, v]) => chip(n, v)),
+        Object.entries(mine).map(([n, v]) => { const c = chip(n, v, ' mine'); c.textContent = '★ ' + n; c.oncontextmenu = (e) => { e.preventDefault(); this.confirm(`Delete the look “${n}”?`, () => { const o = this.myRetouch(); delete o[n]; localStorage.setItem('tf.retouchPresets', JSON.stringify(o)); this.refreshPanel(); }); }; return c; }),
+        el('button', { class: 'chip', onclick: () => { App.change(() => { for (const id of SP) fx.params[id] = 0; fx.look = { name: 'None', amt: 1, vals: {} }; }); this.refreshPanel(); } }, 'None')),
+      lookVals() ? el('div', { class: 'prop', style: 'display:flex;align-items:center;gap:10px' }, el('span', { class: 'plabel' }, 'Strength'), amt, amtLbl) : el('p', { class: 'hint' }, 'Pick a look to get one Strength slider for all of it.'),
+      el('div', { class: 'btnrow' }, hold));
+    // ---- everything else sits behind Fine-tune ----
+    const fine = el('div', { class: 'fxmore' + (this._retFine ? '' : ' shut') }), top = body;
+    top.appendChild(el('button', { class: 'btn sm morebtn', onclick: (e) => { this._retFine = !this._retFine; fine.classList.toggle('shut', !this._retFine); e.target.textContent = this._retFine ? 'Hide fine-tune' : 'Fine-tune every setting'; } }, this._retFine ? 'Hide fine-tune' : 'Fine-tune every setting'));
+    top.appendChild(fine); body = fine;
+    body.append(el('p', { class: 'hint' }, `Faces are saved for ${Object.keys(rec.frames).length} frame${Object.keys(rec.frames).length === 1 ? '' : 's'} of this clip (up to ${count} ${count === 1 ? 'person' : 'people'}).`),
+      el('div', { class: 'btnrow' }, el('button', { class: 'btn sm', onclick: () => run(phone ? 2 : 1) }, 'Search faces again'),
+        l.type === 'video' ? el('button', { class: 'btn sm', onclick: () => run(phone ? 1 : 2) }, phone ? 'Every frame (slower, more exact)' : 'Every 2nd frame (faster)') : null,
+        el('button', { class: 'btn sm', onclick: () => this.ask('Name this look', 'My look', (n) => { const o = this.myRetouch(); o[n] = { ...fx.params }; delete o[n].compare; delete o[n].who; try { localStorage.setItem('tf.retouchPresets', JSON.stringify(o)); } catch (e) { } this.refreshPanel(); }) }, 'Save these settings as a look')));
     for (const p of def.params) {
       if (p.kind === 'section') { body.appendChild(el('div', { class: 'sect' }, p.label)); continue; }
       const path = `fx.${fx.uid}.${p.id}`;
@@ -14337,9 +14442,9 @@ if (typeof LOOKS !== 'undefined') LOOKS.push(
 {
   const CUT_LOW = (u, w, h) => { const k = Math.min(1, 480 / Math.max(w, h)); return [w * k, h * k]; };
   fxm('cutout', 'Remove Background', 'Keying', 'Removes the background behind people (no green screen needed). Loads a model the first time.', [
+    S('shrink', 'Trim the Edge', 0.1, 0, 1), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('despill', 'Clean Edge Colour', 0.6, 0, 1), B('invert', 'Keep the Background Instead', false),
     L('model', 'Model', 0, ['Detailed (hair and clothes)', 'Fast']), B('zoomIn', 'Look Closer at the Person', true),
-    S('refine', 'Follow the Outline', 0.75, 0, 1), S('smoothE', 'Outline Search Width', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), S('soft', 'Edge Softness', 0.3, 0.02, 0.5), S('shrink', 'Trim the Edge', 0.1, 0, 1), S('despill', 'Clean Edge Colour', 0.6, 0, 1),
-    B('invert', 'Keep the Background Instead', false), B('showmask', 'Show the Mask', false)
+    S('refine', 'Follow the Outline', 0.75, 0, 1), S('smoothE', 'Outline Search Width', 0.5, 0, 1), S('edge', 'Edge Position', 0.5, 0.05, 0.95), B('showmask', 'Show the Mask', false)
   ], [
     { scale: 0.5, body: `void main(){ gl_FragColor = tfGet(vUv); }` },
     { size: CUT_LOW, save: 'a', body: `uniform sampler2D uCut; uniform float uCutOn;
@@ -14373,7 +14478,7 @@ void main(){ vec4 s = oGet(vUv); if (uCutOn < 0.5) { gl_FragColor = s; return; }
   if (invert) { a = 1.0 - a; c = tfUn(s); }
   float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }` }
   ]);
-  const d = EffectLib.get('tf.cutout'); if (d) { d.pro = false; d.tags = 'keying,background,remove,person,cutout'; }
+  const d = EffectLib.get('tf.cutout'); if (d) { d.pro = false; d.main = 4; d.tags = 'keying,background,remove,person,cutout'; }
   // The frame a video layer was last drawn with, for effects that must look at the very same picture.
   const vf = Renderer.videoFrame; Renderer.videoFrame = async function (layer) { const fr = await vf.apply(this, arguments); try { Runtime.get(layer).lastFr = fr; } catch (e) { } return fr; };
 }
@@ -14386,7 +14491,7 @@ void main(){ vec4 s = oGet(vUv); if (uCutOn < 0.5) { gl_FragColor = s; return; }
 // screen explains what happened instead of a blank page.
 // ===========================================================================
 Object.assign(UI, {
-  cycleQuality() { const order = ['full', 'half', 'quarter']; App.setQuality(order[(order.indexOf(App.quality) + 1) % 3]); toast({ full: 'Preview: Full quality', half: 'Preview: Half (smoother)', quarter: 'Preview: Quarter (fastest)' }[App.quality]); },
+  cycleQuality() { const order = ['auto', 'full', 'half', 'quarter']; App.setQuality(order[(Math.max(0, order.indexOf(App.quality)) + 1) % order.length]); App.setPreviewQuality(); toast({ auto: 'Preview: Auto (fits this screen)', full: 'Preview: Full quality', half: 'Preview: Half (smoother)', quarter: 'Preview: Quarter (fastest)' }[App.quality]); },
   kfJump(dir) { const l = App.layer(); if (l) KF.jump(l, dir); else toast('Select a clip first.'); },
   kfToggle() { const l = App.layer(); if (!l) { toast('Select a clip to add a keyframe.'); return; } KF.toggleTransform(l); this.refresh(); },
   stepFrames(n) { if (Player.playing) Player.pause(); App.setTime(App.time + n / App.project.fps); },
