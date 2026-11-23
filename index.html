@@ -7541,7 +7541,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '22 Nov J';
+const TF_BUILD = '23 Nov L';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -12097,12 +12097,12 @@ const FaceAI = {
     } else return null;
     let out = null, again = false; this.ts += 40; const tm0 = performance.now();
     // First model: copy what is needed, because the masks only live inside the callback.
-    let W = 0, H = 0, multi = false, P = null, ACC = null;
+    let W = 0, H = 0, multi = false, P = null, ACC = null, HAIR = null, FACE = null;
     const buf = (name, n) => (z[name] && z[name].length === n ? z[name] : (z[name] = new Float32Array(n)));
     this.seg.segmentForVideo(input, this.ts, (res) => {
       const ms = res.confidenceMasks; if (!ms || !ms.length) return;
       multi = ms.length > 2; W = ms[0].width; H = ms[0].height; const n = W * H, a = ms[0].getAsFloat32Array(); P = buf('p', n);
-      if (multi) { for (let i = 0; i < n; i++) P[i] = 1 - a[i]; if (ms.length > 5) { ACC = buf('acc', n); ACC.set(ms[5].getAsFloat32Array().subarray(0, n)); } }
+      if (multi) { for (let i = 0; i < n; i++) P[i] = 1 - a[i]; if (ms.length > 5) { ACC = buf('acc', n); ACC.set(ms[5].getAsFloat32Array().subarray(0, n)); HAIR = buf('hair', n); HAIR.set(ms[1].getAsFloat32Array().subarray(0, n)); FACE = buf('face', n); FACE.set(ms[3].getAsFloat32Array().subarray(0, n)); } }
       else P.set(a.subarray(0, n));
     });
     if (!P) { const ms = performance.now() - tm0; z.cost = z.cost ? z.cost * 0.7 + ms * 0.3 : ms; return null; }
@@ -12113,6 +12113,8 @@ const FaceAI = {
       if (S) z.fuse = fuseMasks(P, ACC, S, W, H); else z.fuse = 'alone';
     }
     cleanMask(P, W, H);
+    if (multi) tidyMask(P, faceZone(P, HAIR, ACC, FACE, W, H), W, H);
+    try { motionGuard(z, P, W, H, B); } catch (e) { }
     {
       const cv = z.mc || (z.mc = document.createElement('canvas')); if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; } const ctx = cv.getContext('2d'), id = z.id && z.id.width === W && z.id.height === H ? z.id : (z.id = ctx.createImageData(W, H)), d = id.data;
       let x0 = W, y0 = H, x1 = -1, y1 = -1;
@@ -12121,7 +12123,10 @@ const FaceAI = {
       ctx.putImageData(id, 0, 0);
       const found = x1 >= 0;
       // Looking at a cut-out area and the person is gone from it: look at the whole frame again.
-      if (boxed && !found) again = true;
+      // Looking at a cut-out area: if the person is gone from it, or reaches its edge (they moved since that area was chosen,
+      // so part of them would be cut off in a straight line), the whole frame is looked at again instead.
+      const cutOff = boxed && found && !retry && ((x0 <= 1 && B[0] > 0.004) || (x1 >= W - 2 && B[2] < 0.996) || (y0 <= 1 && B[1] > 0.004) || (y1 >= H - 2 && B[3] < 0.996));
+      if (boxed && (!found || cutOff)) again = true;
       else {
       // The mask in frame space (long side 512).
       const fk = 512 / Math.max(mw, mh), FW = Math.max(16, Math.round(mw * fk)), FH = Math.max(16, Math.round(mh * fk));
@@ -12253,6 +12258,103 @@ function cutHoldSlot(id) {
   if (k < 0) { k = C.ids[0] == null || now - C.at[0] > 2000 ? 0 : (C.ids[1] == null || now - C.at[1] > 2000 ? 1 : -1); if (k < 0) return -1; C.ids[k] = id; C.gen[k]++; }
   C.at[k] = now; return k;
 }
+// Hair and "other things" (hats, bags) are only allowed close to the face: a little above it and beside it.
+// Further up or out, what the model calls hair is usually a cushion, a plant or a dark shelf behind the head.
+// Lower down nothing is limited, so long hair over the shoulders stays. Skipped when no clear face is seen.
+function faceZone(P, HAIR, ACC, FACE, W, H) {
+  if (!FACE || !HAIR) return null;
+  const n = W * H, C = faceZone; if (!C.lab || C.lab.length !== n) { C.lab = new Int32Array(n); C.st = new Int32Array(n); }
+  const lab = C.lab, stack = C.st; lab.fill(0); let best = 0, bid = 0, cnt = 0, bx0 = 0, by0 = 0, bx1 = 0, by1 = 0; const faces = [];
+  for (let i = 0; i < n; i++) if (P[i] > 0.5) cnt++;
+  for (let i = 0; i < n; i++) { if (lab[i] || !(FACE[i] > 0.5)) continue; const id = faces.length + 1; let sp = 0, a = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; stack[sp++] = i; lab[i] = id;
+    while (sp) { const j = stack[--sp], x = j % W, y = (j - x) / W; a++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= H) continue; for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= W) continue; const k = yy * W + xx; if (!lab[k] && FACE[k] > 0.5) { lab[k] = id; stack[sp++] = k; } } } }
+    faces.push(a); if (a > best) { best = a; bid = id; bx0 = x0; by0 = y0; bx1 = x1 + 1; by1 = y1 + 1; } }
+  const out = { lab, faces, best, bid };
+  if (!best || best < 0.002 * n || best < 0.07 * cnt) return out;
+  const fw = bx1 - bx0, fh = by1 - by0, s = Math.max(fw, fh), UP = 0.4, SIDE = 0.8, lowY = by0 + 0.3 * fh;
+  for (let y = 0, i = 0; y < H; y++) { if (y > lowY) break; const dy = Math.max(0, by0 - y) / s / UP;
+    for (let x = 0; x < W; x++, i++) { const dx = Math.max(0, bx0 - x, x - bx1) / s / SIDE, e = Math.sqrt(dx * dx + dy * dy); if (e <= 1) continue;
+      const t = e >= 1.5 ? 1 : (e - 1) / 0.5, cut = t * t * (3 - 2 * t), lim = HAIR[i] + (ACC ? ACC[i] : 0), p = P[i] - lim * cut; P[i] = p < 0 ? 0 : p; } }
+  return out;
+}
+// The person is grown outwards from their face, through the mask only. Whatever is reached first from a face
+// that is too small to be a person's (an animal, a picture on the wall), or is never reached at all (a loose
+// patch), is removed. Small holes inside the person are closed, and the inside is made fully solid, so only the
+// outline stays soft. With no clear face (a person seen from behind), only small loose patches are removed.
+function tidyMask(P, F, W, H) {
+  const n = W * H, C = tidyMask; if (!C.own || C.own.length !== n) { C.own = new Int32Array(n); C.q = new Int32Array(n); C.keep = new Uint8Array(n); C.d1 = new Uint16Array(n); C.d2 = new Uint16Array(n); C.lab = new Int32Array(n); }
+  const own = C.own, q = C.q, keep = C.keep, D1 = C.d1, D2 = C.d2; let cnt = 0; for (let i = 0; i < n; i++) if (P[i] > 0.5) cnt++;
+  if (!cnt) return;
+  let usedFaces = false;
+  if (F && F.best && F.best >= 0.0015 * n && F.best >= 0.04 * cnt) {
+    const lab = F.lab, fa = F.faces, big = F.best, good = new Uint8Array(fa.length + 1);
+    for (let j = 1; j <= fa.length; j++) if (fa[j - 1] >= 0.5 * big) good[j] = 1;
+    // Pieces of the same face (split by glasses, a hand or hair) count as that face.
+    for (let i = 0; i < n; i++) D1[i] = good[lab[i]] ? 0 : 60000; chamfer(D1, W, H); const r = 3 * 0.35 * Math.sqrt(big);
+    const near = new Uint8Array(fa.length + 1); for (let i = 0; i < n; i++) { const L = lab[i]; if (L && !good[L] && D1[i] <= r) near[L] = 1; } for (let j = 1; j <= fa.length; j++) if (near[j]) good[j] = 1;
+    // Grow from every face at once (breadth first, through the mask).
+    let qh = 0, qt = 0; own.fill(0);
+    for (let i = 0; i < n; i++) { const L = lab[i]; if (L && P[i] > 0.5 && (good[L] || fa[L - 1] >= 0.1 * big)) { own[i] = L; q[qt++] = i; } }
+    // The growing goes through weaker parts too (0.15), so a sleeve or an arm the model is less sure of stays joined to the body.
+    while (qh < qt) { const i = q[qh++], o = own[i], x = i % W;
+      if (x > 0 && !own[i - 1] && P[i - 1] > 0.15) { own[i - 1] = o; q[qt++] = i - 1; }
+      if (x < W - 1 && !own[i + 1] && P[i + 1] > 0.15) { own[i + 1] = o; q[qt++] = i + 1; }
+      if (i >= W && !own[i - W] && P[i - W] > 0.15) { own[i - W] = o; q[qt++] = i - W; }
+      if (i < n - W && !own[i + W] && P[i + W] > 0.15) { own[i + W] = o; q[qt++] = i + W; } }
+    for (let i = 0; i < n; i++) keep[i] = own[i] && good[own[i]] ? 1 : 0; usedFaces = true;
+    // Parts reached from no face at all, but lying right against the person (within 3 pixels), are kept too.
+    for (let i = 0; i < n; i++) D1[i] = keep[i] ? 0 : 60000; chamfer(D1, W, H);
+    { let qh = 0, qt = 0; for (let i = 0; i < n; i++) if (!own[i] && P[i] > 0.5 && D1[i] <= 9) { keep[i] = 1; own[i] = -1; q[qt++] = i; }
+      while (qh < qt) { const i = q[qh++], x = i % W;
+        for (const k of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) if (k >= 0 && k < n && !own[k] && P[k] > 0.5) { own[k] = -1; keep[k] = 1; q[qt++] = k; } } }
+  }
+  if (!usedFaces) {
+    // Separate areas: the biggest and any at least a quarter of its size stay.
+    const lab = C.lab; lab.fill(0); const area = [0]; let best = 0;
+    for (let i = 0; i < n; i++) { if (lab[i] || !(P[i] > 0.5)) continue; const id = area.length; let qh = 0, qt = 0, a = 0; q[qt++] = i; lab[i] = id;
+      while (qh < qt) { const j = q[qh++], x = j % W, y = (j - x) / W; a++;
+        for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= H) continue; for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= W) continue; const k = yy * W + xx; if (!lab[k] && P[k] > 0.5) { lab[k] = id; q[qt++] = k; } } } }
+      area.push(a); if (a > best) best = a; }
+    for (let i = 0; i < n; i++) keep[i] = lab[i] && area[lab[i]] >= 0.25 * best ? 1 : 0;
+  }
+  // Remove what was not kept, with its soft rim (up to 12 pixels out, where it is nearer than the person).
+  let drop = false; for (let i = 0; i < n; i++) { if (P[i] > 0.5 && !keep[i]) { D1[i] = 0; drop = true; } else D1[i] = 60000; D2[i] = keep[i] ? 0 : 60000; }
+  if (drop) { chamfer(D1, W, H); chamfer(D2, W, H); for (let i = 0; i < n; i++) if (D1[i] <= 36 && D1[i] < D2[i]) P[i] = 0; }
+  // Close small holes (areas not kept that do not reach the edge of the picture).
+  let tot = 0; for (let i = 0; i < n; i++) tot += keep[i];
+  const lab = C.lab; lab.fill(0);
+  for (let i = 0; i < n; i++) { if (keep[i] || lab[i]) continue; let qh = 0, qt = 0, edge = false; q[qt++] = i; lab[i] = 1;
+    while (qh < qt) { const j = q[qh++], x = j % W, y = (j - x) / W; if (x === 0 || y === 0 || x === W - 1 || y === H - 1) edge = true;
+      if (x > 0 && !keep[j - 1] && !lab[j - 1]) { lab[j - 1] = 1; q[qt++] = j - 1; } if (x < W - 1 && !keep[j + 1] && !lab[j + 1]) { lab[j + 1] = 1; q[qt++] = j + 1; }
+      if (y > 0 && !keep[j - W] && !lab[j - W]) { lab[j - W] = 1; q[qt++] = j - W; } if (y < H - 1 && !keep[j + W] && !lab[j + W]) { lab[j + W] = 1; q[qt++] = j + W; } }
+    if ((!edge && qt < 0.02 * tot) || qt < 0.003 * tot) for (let k = 0; k < qt; k++) keep[q[k]] = 2; }
+  // Solid inside: from 2 pixels in, the person is fully there.
+  for (let i = 0; i < n; i++) D1[i] = keep[i] ? 60000 : 0; chamfer(D1, W, H);
+  for (let i = 0; i < n; i++) { const d = D1[i] / 3; if (d > 2) { const t = d >= 6 ? 1 : (d - 2) / 4, v = t * t * (3 - 2 * t); if (v > P[i]) P[i] = v; } }
+}
+// Video: the person cannot jump far in one frame. Something the model adds far from where the person was in each of
+// the last two frames (a cushion or a pet that pops in for a frame or two) is left out. The frames compared with are
+// the model's own answers before this step, so a part that was wrongly left out once comes straight back.
+function motionGuard(z, P, W, H, B) {
+  const idx = z.idx; if (idx == null) return;
+  // Remember this frame (before the guard), on a small grid over the whole frame.
+  const GW = 96, GH = 96, Dn = new Uint16Array(GW * GH).fill(60000); let any = false;
+  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (P[y * W + x] > 0.5) { const gx = Math.min(GW - 1, ((B[0] + (x + 0.5) / W * (B[2] - B[0])) * GW) | 0), gy = Math.min(GH - 1, ((B[1] + (y + 0.5) / H * (B[3] - B[1])) * GH) | 0); Dn[gy * GW + gx] = 0; any = true; }
+  if (any) chamfer(Dn, GW, GH);
+  const cur = any ? { idx, d: Dn } : null;
+  const older = (z.gCur && z.gCur.idx !== idx) ? z.gCur : z.gPrev, oldest = (z.gCur && z.gCur.idx !== idx) ? z.gPrev : (z.gPrev && z.gPrev.prev) || null;
+  const ok = (r) => r && Math.abs(idx - r.idx) >= 1 && Math.abs(idx - r.idx) <= 4;
+  if (ok(older) && ok(oldest) && older.idx !== oldest.idx) {
+    const gap = Math.max(Math.abs(idx - older.idx), Math.abs(idx - oldest.idx)), lim = 0.08 + 0.02 * gap, L = Math.max(GW, GH), A = older.d, C = oldest.d;
+    for (let y = 0, i = 0; y < H; y++) { const gy = Math.min(GH - 1, ((B[1] + (y + 0.5) / H * (B[3] - B[1])) * GH) | 0);
+      for (let x = 0; x < W; x++, i++) { if (P[i] <= 0) continue; const k = gy * GW + Math.min(GW - 1, ((B[0] + (x + 0.5) / W * (B[2] - B[0])) * GW) | 0), d = Math.max(A[k], C[k]) / 3 / L;
+        if (d > lim) { const t = d >= lim + 0.04 ? 1 : (d - lim) / 0.04; P[i] *= 1 - t * t * (3 - 2 * t); } } }
+  }
+  if (!cur) return;
+  if (z.gCur && z.gCur.idx !== idx) { cur.prev = z.gCur; z.gPrev = z.gCur; } else if (z.gCur) cur.prev = z.gCur.prev;
+  z.gCur = cur;
+}
 // A matte as a one-channel texture.
 function uploadMatte(tex, bytes, w, h) { const gl = engine.gl; gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, bytes); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); tex._w = w; tex._h = h; }
@@ -12291,6 +12393,7 @@ FX_HOOKS['tf.cutout'] = async (layer, fxi, vals, t, R, list, src) => {
     const reuse = playing && r.cutTex && r.cutAt && z && z.cost > 9 && (slot >= 0 ? r.cutHeld === slot + 1 && r.cutGen === cutHoldSlot.gen[slot] && now - r.cutAt < Math.min(100, z.cost * 0.5) : now - r.cutAt < Math.min(220, z.cost * 3));
     if (reuse) stale = true;
     else {
+      if (!FaceAI._cz) FaceAI._cz = new Map(); { let zg = FaceAI._cz.get(layer.id); if (!zg) FaceAI._cz.set(layer.id, zg = {}); zg.idx = layer.type === 'video' ? i0 : null; }
       let cv = null, fin = false; try { cv = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, zoom); let zz = FaceAI._cz.get(layer.id);
         // Paused or exporting: if that was only the first, whole-frame look, look again close up straight away.
         if (cv && zz && !zz.final && !playing) { zz.noBlend = true; const c2 = FaceAI.maskFor(layer.id, fr, img, m.w, m.h, zoom); zz = FaceAI._cz.get(layer.id); if (zz) zz.noBlend = false; if (c2) cv = c2; }
@@ -12406,7 +12509,7 @@ const MATTE_CFG = {
 };
 
 const Matte = {
-  VER: 5, CH: 40,                 // stored in groups of 40 frames
+  VER: 8, CH: 40,                 // stored in groups of 40 frames
   mem: new Map(),                 // media id -> { w, h, frames: Map(index -> packed bytes), have: Set(chunks read), dirty: Set(chunks to write), index: Set(frame numbers on disk) }
   state: new Map(),               // look-closer state per key
   eng: null, baking: false, cancel: false,
@@ -12480,7 +12583,7 @@ const Matte = {
       for (const idx of todo) {
         if (this.cancel) break;
         let fr = null, img = null; if (l.type === 'image') img = m.image; else { fr = await Renderer.videoFrameIdx(l, idx, 'exact', false); if (!fr) continue; }
-        if (!FaceAI._cz) FaceAI._cz = new Map(); if (!FaceAI._cz.get(key)) FaceAI._cz.set(key, {}); FaceAI._cz.get(key).noBlend = true;   // fresh: no carry-over from the frame before
+        if (!FaceAI._cz) FaceAI._cz = new Map(); if (!FaceAI._cz.get(key)) FaceAI._cz.set(key, {}); FaceAI._cz.get(key).noBlend = true; FaceAI._cz.get(key).idx = idx;   // fresh: no carry-over from the frame before
         let cv = FaceAI.maskFor(key, fr, img, m.w, m.h, zoom); if (!cv) continue;
         if (!FaceAI._cz.get(key).final) { const c2 = FaceAI.maskFor(key, fr, img, m.w, m.h, zoom); if (c2) cv = c2; }      // the first look was the whole frame: look again close up
         w = cv.width; h = cv.height; const d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data, cur = new Uint8Array(w * h); for (let i = 0, o = 0; i < cur.length; i++, o += 4) cur[i] = d[o];
