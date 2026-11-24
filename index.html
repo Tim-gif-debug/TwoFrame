@@ -9,8 +9,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="TwoFrame">
-<title>TwoFrame</title>
+<meta name="apple-mobile-web-app-title" content="Maximum">
+<title>Maximum Video Editor</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f0f10'/%3E%3Crect x='6' y='8' width='9' height='16' rx='2' fill='%2314e0c8'/%3E%3Crect x='17' y='8' width='9' height='16' rx='2' fill='%23ff4f8b'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -751,6 +751,24 @@ body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
 /* remove background status */
 .mattestat{display:flex;flex-direction:column;gap:6px;margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.05)}
 
+/* iPhone app: phone check for Remove Background */
+.phonecheck .pcgrid{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:4px 0 10px;font-size:14px}
+.phonecheck .pcok{color:#7fe0a8;margin:6px 0}
+.phonecheck .pcno{color:#ff8a80;margin:6px 0}
+
+</style>
+<style>
+/* Maximum Video Editor wordmark. Heavy, wide capitals leaning forward, the X in the accent colour, and a speed line before VIDEO EDITOR.
+   Colours come from the editor's chosen look. Font: only the letters the wordmark uses, built in. */
+@font-face{font-family:"MaxU";src:url(data:font/woff2;base64,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) format("woff2");font-weight:900}
+.brand.maxbrand { display:block; margin-bottom:22px; }
+.brand.maxbrand .logo { display:none; }
+.brand.maxbrand .maxword { margin:0; line-height:1; color:var(--text); }
+.brand.maxbrand .maxword b { color:var(--acc); font-weight:inherit; }
+.brand.maxbrand .maxsub { position:relative; margin-top:9px; padding-left:30px; font-size:11px; font-weight:700; letter-spacing:4.4px; color:var(--dim); line-height:1; text-transform:uppercase; }
+.brand.maxbrand .maxsub::before { content:''; position:absolute; left:0; top:50%; width:22px; height:3px; margin-top:-1.5px; border-radius:2px; background:var(--acc); }
+.brand.maxbrand .maxword.maxfont { font:900 31px/1 "MaxU",sans-serif; letter-spacing:.5px; transform:skewX(-10deg); transform-origin:left bottom; }
+
 </style>
 </head>
 <body class="lay-mobile">
@@ -758,7 +776,7 @@ body.lay-mobile #lab .topbar .exportbtn { margin-left: auto; }
 <!-- ======================= Home screen ======================= -->
 <section id="home" class="screen">
   <div class="homewrap">
-    <div class="brand"><span class="logo"><i></i><i></i></span><h1>TwoFrame</h1></div>
+    <div class="brand maxbrand"><span class="logo"><i></i><i></i></span><h1 class="maxword maxfont" aria-label="Maximum">MA<b>X</b>IMUM</h1><div class="maxsub">Video Editor</div></div>
     <div class="homebig">
       <button class="newproj" onclick="UI.newProjectDialog()"><span class="plus" data-icon="plus"></span><b>New project</b></button>
       <button class="openproj" onclick="UI.openProjectFile()"><span data-icon="folder"></span><b>Open project file</b><small>.twoframe.zip</small></button>
@@ -2976,6 +2994,43 @@ async function writeZip(files, onProgress) {
 
 </script>
 <script>
+'use strict';
+// ---- The TwoFrame iPhone app -----------------------------------------------------------------
+// When TwoFrame runs inside its iPhone app (a native shell around this same editor), a small
+// native helper is available. It reports what the phone can do, makes background cutouts with
+// Apple's own on-device person and subject models, and saves files to Photos or the share sheet.
+// In a normal browser none of this exists and TFNative.on is false.
+const TFNative = {
+  _p: null,
+  get on() {
+    try { const C = window.Capacitor; return !!(C && C.isNativePlatform && C.isNativePlatform() && C.getPlatform && C.getPlatform() === 'ios'); } catch (e) { return false; }
+  },
+  plugin() {
+    if (this._p) return this._p;
+    const C = window.Capacitor; if (!C) return null;
+    this._p = C.registerPlugin ? C.registerPlugin('TFNative') : (C.Plugins && C.Plugins.TFNative) || null;
+    return this._p;
+  },
+  async call(method, opts) { const p = this.plugin(); if (!p || !p[method]) throw new Error('This part of the iPhone app is missing. Update the app.'); return p[method](opts || {}); },
+  // Phone check: model, chip, iOS, whether Apple's cutout is there, and a real speed test.
+  check() { return this.call('check'); },
+  // One mask. `jpeg` is the picture (base64, no prefix). The mask comes back as a grey PNG of w by h.
+  mask(jpeg, w, h, mode, session) { return this.call('mask', { image: jpeg, w, h, mode: mode || 'video', session: session || '' }); },
+  endSession(session) { return this.call('endSession', { session }).catch(() => { }); },
+  // Saving: the file is sent in pieces (big videos do not fit in one message), then put in Photos or the share sheet.
+  async saveFile(blob, name, to) {
+    const { id } = await this.call('fileBegin', { name });
+    const CH = 3 * 1024 * 1024;
+    for (let at = 0; at < blob.size; at += CH) {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob.slice(at, at + CH)); });
+      await this.call('fileAppend', { id, data: b64 });
+    }
+    return this.call('fileFinish', { id, to });
+  },
+};
+
+</script>
+<script>
 // ===========================================================================
 // Effects: definitions, XML import, built-in library
 //
@@ -2997,7 +3052,8 @@ const EffectLib = {
     this.defs.set(def.id, def);
   },
   get(id) { return this.defs.get(id); },
-  list() { return this.order.map(id => this.defs.get(id)).filter(Boolean); },
+  // Retired effects are not offered any more, but projects that already use one still open and play.
+  list() { return this.order.map(id => this.defs.get(id)).filter(d => d && !d.retired); },
   categories() {
     const cats = [];
     for (const d of this.list()) if (!cats.includes(d.category)) cats.push(d.category);
@@ -5462,7 +5518,7 @@ const Media = {
       }
       if (!res.ok) {
         const why = { 1: 'loading was stopped', 2: 'a network or file read error', 3: 'the video data couldn’t be decoded', 4: 'this browser doesn’t support the video’s format', timeout: 'the browser never started loading it' }[res.code] || 'unknown';
-        throw new Error(`${m.name} couldn’t be opened (${why}). If you’re using TwoFrame inside the Claude app, open it in Safari instead, from the GitHub Pages copy. If it still fails there, convert the clip to MP4 (H.264).`);
+        throw new Error(`${m.name} couldn’t be opened (${why}). If you’re using Maximum inside the Claude app, open it in Safari instead, from the GitHub Pages copy. If it still fails there, convert the clip to MP4 (H.264).`);
       }
       m.w = res.w; m.h = res.h; m.duration = res.duration;
     } else if (m.type === 'image') {
@@ -7128,7 +7184,7 @@ const Captions = {
   // Runs the whole job. onProgress(fraction, message).
   async run(project, opts, onProgress) {
     this.cancel = false;
-    if (location.protocol === 'file:') throw new Error('Auto captions need TwoFrame to be opened from a web address (GitHub Pages), not a file on this device.');
+    if (location.protocol === 'file:') throw new Error('Auto captions need Maximum to be opened from a web address (GitHub Pages), not a file on this device.');
     if (!this.worker) this.worker = new Worker(URL.createObjectURL(new Blob([WHISPER_WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
     let device = (opts.device === 'wasm' || !navigator.gpu) ? 'wasm' : 'webgpu';
     const files = new Map();
@@ -7541,7 +7597,7 @@ function recordMixedAudio(audioBuf) {
 }
 
 // Shown on the export screen, so it is clear which version of TwoFrame made a file.
-const TF_BUILD = '23 Nov L';
+const TF_BUILD = '24 Nov Q';
 // Clips whose sound could not be read, for the note after an export.
 function silentClips(p) { const out = []; for (const l of p.layers) { if (l.type !== 'video' || l.muted) continue; const m = Media.items.get(l.mediaId); if (m && !m.audio && !m.noAudioTrack && !out.includes(m.name)) out.push(m.name + (m.audioWhy ? ' (' + m.audioWhy + ')' : '')); } return out; }
 const Exporter = {
@@ -7821,9 +7877,9 @@ const ProjectFile = {
 
   async open(file) {
     let entries;
-    try { entries = await readZip(file); } catch (e) { throw new Error('This isn’t a TwoFrame project file. Pick a file that ends in .twoframe.zip.'); }
+    try { entries = await readZip(file); } catch (e) { throw new Error('This isn’t a Maximum project file. Pick a file that ends in .twoframe.zip.'); }
     const get = (n) => entries.find(e => e.name === n);
-    if (!get('project.json')) throw new Error('This zip has no project.json inside, so it isn’t a TwoFrame project file.');
+    if (!get('project.json')) throw new Error('This zip has no project.json inside, so it isn’t a Maximum project file.');
     const p = JSON.parse(await get('project.json').text());
     const meta = get('contents.json') ? JSON.parse(await get('contents.json').text()) : { media: [], effects: [], fonts: [] };
     for (const m of meta.media || []) {
@@ -9162,7 +9218,7 @@ const UI = {
       if (fxi.open) {
         const n0 = card.children.length;
         for (const p of def.params) {
-          if (p.kind === 'texture') continue;
+          if (p.kind === 'texture' || (p.hide && p.hide())) continue;
           if (p.kind === 'section') { if (p.label && !/GOLD MOTION/i.test(p.label)) card.appendChild(el('div', { class: 'sect' }, p.label)); continue; }
           const path = `fx.${fxi.uid}.${p.id}`;
           if (fxi.params[p.id] === undefined) fxi.params[p.id] = deepCopy(p.default);
@@ -9460,11 +9516,11 @@ const UI = {
         const e2 = (performance.now() - t0) / 1000, left = f > 0.02 ? e2 / f - e2 : 0;
         label.textContent = `${Math.round(f * 100)}%${left ? ` · about ${Math.ceil(left)} s left` : ''}`;
       });
-      const name = (p.name || 'TwoFrame').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_') + '.' + (res.ext || 'mp4');
+      const name = (p.name || 'Maximum').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_') + '.' + (res.ext || 'mp4');
       const url = URL.createObjectURL(res.blob);
       this.modal('Export finished', el('div', {},
         el('video', { src: url, controls: true, playsinline: true, class: 'result' }),
-        el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.${res.build ? ' TwoFrame build ' + res.build + '.' : ''}`),
+        el('p', { class: 'hint' }, `${res.W}×${res.H}, ${(res.blob.size / 1048576).toFixed(1)} MB. Made with ${res.method}.${res.build ? ' Maximum build ' + res.build + '.' : ''}`),
         res.timing ? el('p', { class: 'hint' }, res.timing) : null,
         res.audioInfo !== undefined ? el('p', { class: 'hint', style: res.audio ? '' : 'color:#ffb454;font-weight:600' }, res.audioInfo + (res.audio && res.silent && res.silent.length ? ' No sound could be read from: ' + res.silent.join(', ') + '.' : '')) : (res.hadAudio && !res.audio ? el('p', { class: 'hint' }, 'Audio was skipped because this browser can’t encode audio.') : null),
         res.soundReport && res.soundReport.length ? el('details', { class: 'hint' }, el('summary', {}, 'Sound details (send a screenshot of this if the sound is wrong)'), el('div', { style: 'font-size:11px;line-height:1.4;user-select:text;-webkit-user-select:text;word-break:break-word' }, res.soundReport.map(x => el('div', {}, x)))) : null,
@@ -11799,10 +11855,10 @@ const Library = {
     for (const r of await Store.all('media')) if (r.value && r.value.type === 'font') { const name = `fonts/${fonts.length}.font`; files.push({ name, blob: r.value.blob }); fonts.push({ name: r.value.name, file: name }); }
     const extra = {}; for (const k of ['tf.vocab', 'tf.caprules', 'tf.keys', 'tf.guides', 'tf.retouchPresets']) { try { const v = localStorage.getItem(k); if (v != null) extra[k] = v; } catch (e) { } }
     files.unshift({ name: 'library.json', blob: new Blob([JSON.stringify({ app: 'TwoFrame library', saved: new Date().toISOString(), effects: eff, fonts, settings: extra })], { type: 'application/json' }) });
-    const how = await saveBlob(await writeZip(files), 'TwoFrame-library.zip'); if (how === 'saved' || how === 'downloaded' || how === 'shared') toast(`Library backed up: ${eff.length} saved items, ${fonts.length} fonts.`);
+    const how = await saveBlob(await writeZip(files), 'Maximum-library.zip'); if (how === 'saved' || how === 'downloaded' || how === 'shared') toast(`Library backed up: ${eff.length} saved items, ${fonts.length} fonts.`);
   },
   async restore(file) {
-    const entries = await readZip(file), lib = entries.find(e => e.name === 'library.json'); if (!lib) throw new Error('This isn’t a TwoFrame library backup.');
+    const entries = await readZip(file), lib = entries.find(e => e.name === 'library.json'); if (!lib) throw new Error('This isn’t a Maximum library backup.');
     const data = JSON.parse(await lib.text());
     for (const r of data.effects || []) await Store.put('effects', r.key, r.value);
     for (const f of data.fonts || []) { const e = entries.find(x => x.name === f.file); if (e) await Store.put('media', 'font:' + f.name, { id: 'font:' + f.name, type: 'font', name: f.name, blob: await e.blob() }); }
@@ -11813,7 +11869,7 @@ const Library = {
 
 Object.assign(UI, {
   async exportOther(kind) {
-    const p = App.project, safe = (p.name || 'TwoFrame').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_');
+    const p = App.project, safe = (p.name || 'Maximum').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_');
     const bar = el('div', { class: 'bar' }, el('i')), label = el('p', { class: 'hint' }, 'Starting…');
     this.modal('Exporting', el('div', {}, bar, label), [['Cancel', () => { Exporter.cancel = true; }]]);
     const prog = (f) => { bar.firstChild.style.width = (f * 100).toFixed(1) + '%'; label.textContent = Math.round(f * 100) + '%'; };
@@ -11974,7 +12030,7 @@ const FACE_PTS = [10, 152, 234, 454, 33, 133, 362, 263, 61, 291, 0, 17, 1, 172, 
 const FaceAI = {
   vision: null, lm: null, lmImage: null, seg: null, data: new Map(), cancel: false, ts: 0,
   async lib() {
-    if (location.protocol === 'file:') throw new Error('Face tools need TwoFrame opened from a web address (GitHub Pages), not a file on this device.');
+    if (location.protocol === 'file:') throw new Error('Face tools need Maximum opened from a web address (GitHub Pages), not a file on this device.');
     if (!this.vision) {
       let last = null;
       for (const base of [MP_BASE, `https://unpkg.com/@mediapipe/tasks-vision@${MP_VER}`]) {
@@ -13754,7 +13810,7 @@ const LAB_GUIDE = [
   ['The shader', 'Write a normal main() that sets gl_FragColor. Colours are premultiplied by alpha. vUv runs from 0 to 1 with y = 0 at the top.'],
   ['What you can use', 'time (seconds), resolution (pixels), tfGet(uv) reads the picture, tfGetT(uv) reads it and is clear outside the frame, tfUn(c) removes the alpha multiply, tfLum(rgb), tfHash(vec2), tfNoise(vec2), xFbm(vec2), xSobel(uv, width), xBlur(uv, radius), xAdd(colour, light), xRot(vec2, angle), xHsv(rgb) and xRgb(hsv).'],
   ['Limits', 'Shaders only. while and do loops are refused, and for loops need a fixed count of 256 or less. A shader that takes too long on a tiny test picture is refused.'],
-  ['Bringing in code', 'Open code file and Paste code take four kinds: TwoFrame effects, ISF shaders, mainImage shaders and plain GLSL. TwoFrame guesses the kind and asks you to confirm, then converts it so you can keep editing and add your own @param controls.'],
+  ['Bringing in code', 'Open code file and Paste code take four kinds: Maximum effects, ISF shaders, mainImage shaders and plain GLSL. Maximum guesses the kind and asks you to confirm, then converts it so you can keep editing and add your own @param controls.'],
   ['No-code mode', 'Add built-in effects to the stack, set them up, and tick the settings you want to keep adjustable. The rest are locked at their current values.']
 ];
 
@@ -13835,7 +13891,7 @@ const Lab = {
 };
 // The kinds of effect code TwoFrame can take in.
 Lab.KINDS = [
-  ['twoframe', 'TwoFrame effect', 'A shader with // @param lines at the top. This is what Effect Lab saves.'],
+  ['twoframe', 'Maximum effect', 'A shader with // @param lines at the top. This is what Effect Lab saves.'],
   ['isf', 'ISF shader', 'Has a JSON block in a /* { } */ comment at the top that lists its inputs.'],
   ['toy', 'mainImage shader', 'Written as void mainImage(out vec4 fragColor, in vec2 fragCoord), with iTime and iResolution.'],
   ['glsl', 'Plain GLSL', 'A bare fragment shader with void main() and gl_FragColor. Add @param lines afterwards to give it sliders.']
@@ -13952,7 +14008,7 @@ Object.assign(UI, {
       this.modal('My effects', list, [['Import .tfx', () => file.click()], ['Community', () => { this.closeModal(); this.communityLibrary(); }], ['Close', () => this.closeModal()]]);
     };
     const file = el('input', { type: 'file', accept: '.tfx,application/json', style: { display: 'none' }, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-      try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1 || !(j.kind === 'code' ? typeof j.source === 'string' : Array.isArray(j.stack))) throw new Error('This isn’t a TwoFrame effect file.');
+      try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1 || !(j.kind === 'code' ? typeof j.source === 'string' : Array.isArray(j.stack))) throw new Error('This isn’t a Maximum effect file.');
         const r = j.kind === 'code' ? { id: uid('fx'), kind: 'code', source: String(j.source).slice(0, 20000) } : { id: uid('fx'), kind: 'stack', name: String(j.name || 'Stack').slice(0, 40), stack: j.stack.slice(0, 6).filter(s => s && EffectLib.get(s.defId)).map(s => ({ defId: String(s.defId), values: { ...defaultParams(EffectLib.get(s.defId)), ...(s.values || {}) }, exposed: Array.isArray(s.exposed) ? s.exposed.map(String) : [] })) };
         this.closeModal(); setMode(r.kind, r); toast('Loaded. Check the preview, then Save to add it to your effects.'); } catch (err) { toast((err && err.message) || 'That file could not be read.', 5000); } } });
     const save = async () => { if (dirty) build(); if (!def) { toast('Fix the problem shown under the preview first.'); return; } try { if (rec.kind === 'stack') rec.name = nameIn.value.trim() || 'My Stack'; await Lab.save(rec); toast(`Saved. “${EffectLib.get('lab.' + rec.id).name}” is now in Effects under My Effects.`, 4000); } catch (e) { toast(e.message, 5000); } };
@@ -14177,7 +14233,7 @@ Object.assign(UI, {
       b.onclick = async () => { try { await Community.install(e); b.textContent = 'Added'; b.disabled = true; b.classList.remove('primary'); toast('“' + e.name + '” is now in your effects, under Community.'); this.refreshPanel && this.refreshPanel(); } catch (err) { toast((err && err.message) || 'That effect could not be added.', 5000); } };
       list.appendChild(el('div', { class: 'sritem' }, el('div', {}, el('b', {}, e.name || 'Effect'), el('div', { class: 'hint' }, 'by ' + (e.author || 'Unknown'))), el('span', { class: 'grow' }), b)); }
     if (!Community.list.length) list.appendChild(el('p', { class: 'hint' }, Community.error && Community.error !== 'none yet' ? 'The community library could not be loaded here (' + Community.error + ').' : 'No community effects yet. Yours could be the first: save an effect in Effect Lab, open My effects and choose Submit.'));
-    this.modal('Community effects', el('div', {}, el('p', { class: 'hint' }, 'Effects made by other TwoFrame users and checked by a person before they were added.'), list),
+    this.modal('Community effects', el('div', {}, el('p', { class: 'hint' }, 'Effects made by other Maximum users and checked by a person before they were added.'), list),
       [['Submit one of mine', () => { this.closeModal(); this.pickSubmission(); }], ['Terms', () => this.communityTerms()], ['Owner tools', () => this.communityOwner()], ['Close', () => this.closeModal()]]);
   },
   pickSubmission() {
@@ -14191,7 +14247,7 @@ Object.assign(UI, {
     const state = { effects: Community.list.slice() }, list = el('div', { class: 'srlist' }), note = el('p', { class: 'hint' });
     const draw = () => { list.innerHTML = ''; state.effects.forEach((e, i) => list.appendChild(el('div', { class: 'sritem' }, el('div', {}, el('b', {}, e.name), el('div', { class: 'hint' }, 'by ' + e.author + (e.agreed ? ' · agreed to terms v' + e.terms + ' on ' + String(e.agreed).slice(0, 10) : ' · no agreement on file'))), el('span', { class: 'grow' }), el('button', { class: 'btn sm danger', onclick: () => { state.effects.splice(i, 1); draw(); } }, 'Remove')))); if (!state.effects.length) list.appendChild(el('p', { class: 'hint' }, 'The library is empty.')); };
     const add = () => this.pickFiles('.txt,.tfx,.json,text/plain,application/json', async (files) => { const msgs = [];
-      for (const f of files) { try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1) throw new Error('not a TwoFrame effect file');
+      for (const f of files) { try { const j = JSON.parse(await f.text()); if (!j || j.tfx !== 1) throw new Error('not a Maximum effect file');
           if (!j.submission || !j.submission.agreed) throw new Error('it carries no agreement to the terms, so it can’t go in the library');
           const rec = j.kind === 'code' ? { id: 'chk', kind: 'code', source: String(j.source || '') } : { id: 'chk', kind: 'stack', name: j.name, stack: j.stack || [] }, saveList = Community.list; Community.list = state.effects; const res = Community.check(rec); Community.list = saveList;
           if (!res.ok) throw new Error(res.problems[0]);
@@ -14265,7 +14321,7 @@ UI.applySkin = function () { document.body.classList.toggle('skin-leap', this.sk
     body.append(el('div', { class: 'sect' }, 'Style'), el('div', { class: 'choice' },
       opt('capcut', 'CapCut-like: black screen, white keyframe diamonds, Split and Delete first when a clip is selected'),
       opt('leap', 'Videoleap-like: big + button, Mixer, Text, Audio, Filters, Adjust, Format'),
-      opt('classic', 'The first TwoFrame look, in teal')),
+      opt('classic', 'The first Maximum look, in teal')),
       this.row('Bigger buttons and text', el('input', { type: 'checkbox', class: 'tog', checked: this.bigUI, onchange: (e) => { this.bigUI = e.target.checked; } })));
   }; };
 })();
@@ -14505,7 +14561,7 @@ const Rescue = {
     let saved = null; try { saved = await Store.get('projects', ses.id); } catch (e) { }
     const newer = res && res.id === ses.id && (!saved || (res.modified || 0) > (saved.modified || 0) + 500);
     const pick = newer ? { ...(saved || {}), ...res } : saved; if (!pick) { this.clear(); return; }
-    UI.modal('Pick up where you stopped?', el('p', {}, `TwoFrame closed while “${pick.name || 'Untitled'}” was open.${newer ? ' The last few changes had not reached the saved copy yet, and they were recovered.' : ' Everything up to your last change is saved.'}`),
+    UI.modal('Pick up where you stopped?', el('p', {}, `Maximum closed while “${pick.name || 'Untitled'}” was open.${newer ? ' The last few changes had not reached the saved copy yet, and they were recovered.' : ' Everything up to your last change is saved.'}`),
       [['Not now', () => { this.clear(); UI.closeModal(); }], ['Reopen it', async () => { UI.closeModal(); if (newer) { try { await Store.put('projects', pick.id, pick); } catch (e) { } } await App.open(pick); UI.showEditor(); }, 'primary']]);
   }
 };
@@ -14554,7 +14610,7 @@ Object.assign(UI, {
     const g = this.graphicsCheck(), line = (a, b) => this.row(a, el('span', { class: 'hint' }, b));
     const again = () => { this.closeModal(); this.storageScreen(); };
     this.modal('Storage and graphics', el('div', {},
-      el('div', { class: 'sect' }, 'Space'), line('Used by TwoFrame on this device', est.usage != null ? `${mb(est.usage)} of about ${mb(est.quota || 0)}` : 'This browser doesn’t report it'),
+      el('div', { class: 'sect' }, 'Space'), line('Used by Maximum on this device', est.usage != null ? `${mb(est.usage)} of about ${mb(est.quota || 0)}` : 'This browser doesn’t report it'),
       line('Protected from automatic clean-up', persisted ? 'Yes' : 'Not granted by the browser'), line('Smooth previews', `${previews} (${mb(psize)})`), line('Downloaded model files', String(models)),
       el('div', { class: 'btnrow' },
         el('button', { class: 'btn', onclick: async () => { try { const d = await navigator.storage.getDirectory(); const names = []; for await (const [name] of d.entries()) if (name.startsWith('smooth_')) names.push(name); for (const n of names) await d.removeEntry(n); } catch (e) { } Bake.mem.clear(); Runtime.clearCaches(); for (const id of Array.from(FrameSource.map.keys())) FrameSource.drop(id); toast('Caches cleared. Your projects and media were not touched.'); again(); } }, 'Clear caches'),
@@ -14574,15 +14630,16 @@ Object.assign(UI, {
   acknowledgements() {
     const items = [
       ['mp4-muxer', 'MIT licence. Copyright Vanilagy. Writes the exported MP4 files.'],
-      ['VisualOn AAC encoder (vo-aacenc)', 'Apache License 2.0. Copyright 2003-2010 VisualOn. Built into TwoFrame to write AAC sound in exported videos and M4A files.'],
-      ['MediaPipe Tasks Vision, Face Landmarker, Selfie Segmenter and Selfie Multiclass models', 'Apache License 2.0. Copyright Google LLC. Used by Retouch, Remove Background and the person tools; downloaded the first time one is opened.'],
+      ['Unbounded font', 'SIL Open Font License 1.1. Copyright 2022 The Unbounded Project Authors. Used for the Maximum wordmark.'],
+      ['VisualOn AAC encoder (vo-aacenc)', 'Apache License 2.0. Copyright 2003-2010 VisualOn. Built into Maximum to write AAC sound in exported videos and M4A files.'],
+      ['MediaPipe Tasks Vision, Face Landmarker, Selfie Segmenter and Selfie Multiclass models', 'Apache License 2.0. Copyright Google LLC. Used by Retouch and the person tools; downloaded the first time one is opened.'],
       ['Transformers.js', 'Apache License 2.0. Copyright Hugging Face. Runs the caption model on the device.'],
       ['Whisper speech models (tiny, base, small)', 'MIT licence. Copyright OpenAI. Downloaded the first time Captions is used.'],
       ['FidelityFX Super Resolution 1 (edge-adaptive upscaling and sharpening method)', 'MIT licence. Copyright Advanced Micro Devices, Inc. The shaders in Smart upscaling follow this published method.'],
       ['Fonts', 'Loaded from Google Fonts. Each family carries its own licence (SIL Open Font License or Apache License 2.0).'],
-      ['ISF (Interactive Shader Format)', 'An open format by Vidvox, MIT licence. TwoFrame can import shaders written in it; each imported shader keeps its own credit and licence.']
+      ['ISF (Interactive Shader Format)', 'An open format by Vidvox, MIT licence. Maximum can import shaders written in it; each imported shader keeps its own credit and licence.']
     ];
-    this.modal('Acknowledgements', el('div', { class: 'qs' }, items.map(([n, d]) => el('div', {}, el('b', {}, n), el('p', { class: 'hint' }, d))), el('p', { class: 'hint' }, 'TwoFrame runs on your device. Your media is never uploaded.')), [['Close', () => this.closeModal()]]);
+    this.modal('Acknowledgements', el('div', { class: 'qs' }, items.map(([n, d]) => el('div', {}, el('b', {}, n), el('p', { class: 'hint' }, d))), el('p', { class: 'hint' }, 'Maximum runs on your device. Your media is never uploaded.')), [['Close', () => this.closeModal()]]);
   },
 
   // ---- custom effects -------------------------------------------------------------------------------------------
@@ -14596,7 +14653,7 @@ Object.assign(UI, {
         if (ext === 'xml' || ext === 'zip') { xml.push(f); continue; }
         if (ext === 'cube') { await Luts.add(name.replace(/\.cube$/i, ''), await f.text()); done.push(name + ' (colour table, under the LUT effect)'); continue; }
         const text = await f.text(); let rec = null;
-        if (ext === 'tfx' || (ext === 'json' && /"tfx"\s*:/.test(text))) { const j = JSON.parse(text); if (!j || j.tfx !== 1) throw new Error('not a TwoFrame effect file');
+        if (ext === 'tfx' || (ext === 'json' && /"tfx"\s*:/.test(text))) { const j = JSON.parse(text); if (!j || j.tfx !== 1) throw new Error('not a Maximum effect file');
           rec = j.kind === 'stack' ? { id: uid('fx'), kind: 'stack', name: String(j.name || 'Stack').slice(0, 40), stack: (j.stack || []).slice(0, 6).filter(s => s && EffectLib.get(s.defId)).map(s => ({ defId: String(s.defId), values: { ...defaultParams(EffectLib.get(s.defId)), ...(s.values || {}) }, exposed: Array.isArray(s.exposed) ? s.exposed.map(String) : [] })) } : { id: uid('fx'), kind: 'code', source: String(j.source || '').slice(0, 20000) }; }
         else rec = { id: uid('fx'), kind: 'code', source: Lab.convert(text, Lab.detect(text), name) };
         if (rec.kind === 'code') { const errs = Lab.lint(rec.source).concat(Lab.parse(rec.source).errs); if (errs.length) throw new Error(errs[0]); }
@@ -14611,7 +14668,7 @@ Object.assign(UI, {
     const mine = EffectLib.list().filter(d => d.lab || !d.builtin);
     body.append(el('p', { class: 'hint' }, 'Your own effects live here. Import an effect file someone shared, or make one in Effect Lab.'),
       el('div', { class: 'btnrow' }, el('button', { class: 'btn primary', onclick: () => this.importCustom() }, 'Import effect file'), el('button', { class: 'btn', onclick: () => this.effectLab() }, 'Open Effect Lab'), el('button', { class: 'btn', onclick: () => this.effectHelp() }, 'File types and AI prompt'), el('button', { class: 'btn', onclick: () => this.communityLibrary() }, 'Community effects')),
-      el('p', { class: 'hint' }, 'Accepted: .tfx (TwoFrame effects), ISF shaders, mainImage shaders and plain GLSL (.fs, .frag, .glsl, .txt), .xml and .zip effect packs, .cube colour tables. To choose the kind yourself or edit the code first, open it in Effect Lab.'));
+      el('p', { class: 'hint' }, 'Accepted: .tfx (Maximum effects), ISF shaders, mainImage shaders and plain GLSL (.fs, .frag, .glsl, .txt), .xml and .zip effect packs, .cube colour tables. To choose the kind yourself or edit the code first, open it in Effect Lab.'));
     if (!mine.length) { body.append(el('p', { class: 'hint' }, 'Nothing imported yet.')); return; }
     const grid = el('div', { class: 'fxgrid' });
     for (const d of mine) { const th = el('i', { class: 'fxthumb' }); if (d.kind === 'shader') this.queueThumb(d, th);
@@ -14819,11 +14876,11 @@ const Plan = {
   get mode() { try { return localStorage.getItem('tf.plan') || 'open'; } catch (e) { return 'open'; } },
   set mode(v) { try { localStorage.setItem('tf.plan', v); } catch (e) { } },
   get free() { return this.mode === 'free'; },
-  needPro(what) { UI.modal('Part of Pro', el('p', {}, `${what} is part of TwoFrame Pro. Pro is not on sale yet, so this is only a preview of how the Free plan behaves. Switch plans under Storage on the home screen.`), [['OK', () => UI.closeModal()]]); },
+  needPro(what) { UI.modal('Part of Pro', el('p', {}, `${what} is part of Maximum Pro. Pro is not on sale yet, so this is only a preview of how the Free plan behaves. Switch plans under Storage on the home screen.`), [['OK', () => UI.closeModal()]]); },
   mark: null,
   stamp(rt) {
     const E = engine, w = Math.round(E.compW * 0.24), h = Math.round(w * 0.24);
-    if (!this.mark || this.mark.w !== w) { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.font = `700 ${Math.round(h * 0.62)}px system-ui, sans-serif`; g.textBaseline = 'middle'; g.textAlign = 'right'; g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = h * 0.12; g.fillStyle = 'rgba(255,255,255,.72)'; g.fillText('TwoFrame', w - h * 0.1, h / 2); const tex = E.newTex(); E.upload(tex, c); this.mark = { tex, w, h }; }
+    if (!this.mark || this.mark.w !== w) { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.font = `700 ${Math.round(h * 0.62)}px system-ui, sans-serif`; g.textBaseline = 'middle'; g.textAlign = 'right'; g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = h * 0.12; g.fillStyle = 'rgba(255,255,255,.72)'; g.fillText('Maximum', w - h * 0.1, h / 2); const tex = E.newTex(); E.upload(tex, c); this.mark = { tex, w, h }; }
     E.drawLayerTex(this.mark.tex, this.mark.w, this.mark.h, { x: E.compW - this.mark.w / 2 - E.compW * 0.02, y: E.compH - this.mark.h / 2 - E.compW * 0.02, scale: 100, rotation: 0 }, rt);
   }
 };
@@ -14874,7 +14931,7 @@ Object.assign(App, {
       try { const at = l.effects.findIndex(f => f.defId === 'tf.cutout'), cards = body.querySelectorAll('.fxcard'); if (at >= 0 && cards[at] && (l.type === 'video' || l.type === 'image')) { const row = el('div', { class: 'mattestat' }, el('span', { class: 'hint' }, ' ')); const card = cards[at]; card.insertBefore(row, card.children[1] || null);
           Matte.readyOf(l, l.effects[at].params).then(pr => { row.innerHTML = ''; if (!pr.total) { row.remove(); return; } const all = pr.done >= pr.total;
             row.append(el('span', { class: 'hint' }, all ? `Smooth playback: all ${pr.total} frame${pr.total === 1 ? ' is' : 's are'} ready.` : `Smooth playback: ${pr.done} of ${pr.total} frames ready. Frames get ready as they are shown, or all at once:`),
-              all ? null : el('div', { class: 'btnrow' }, el('button', { class: 'btn sm primary', onclick: () => prepareClip(l) }, 'Prepare this clip'))); }).catch(() => { row.remove(); }); } } catch (e) { }
+              ...(all ? [] : [el('div', { class: 'btnrow' }, el('button', { class: 'btn sm primary', onclick: () => prepareClip(l) }, 'Prepare this clip'))])); }).catch(() => { row.remove(); }); } } catch (e) { }
       return r; }; }
   // Extract Audio: the sound of a clip as its own clip on the timeline, or as a file.
   const clipSound = async (l) => { const m = l && Media.items.get(l.mediaId); if (!m) return null; if (!m.audio && m.audioReady) { UI.busy && UI.busy('Reading the sound…'); try { await m.audioReady; } catch (e) { } UI.busy && UI.busy(null); } return m; };
@@ -14903,12 +14960,12 @@ Object.assign(App, {
     rows.push(el('button', { class: 'btn', onclick: () => { UI.closeModal(); App.saveClipAudio(false); } }, 'Save this clip’s sound as a file'), el('button', { class: 'btn', onclick: () => { UI.closeModal(); App.saveClipAudio(true); } }, 'Save the whole file’s sound'), el('p', { class: 'hint' }, 'Files are saved as M4A. If this device can’t make M4A, a WAV is saved instead.'));
     UI.modal('Extract audio', el('div', { class: 'col', style: 'display:flex;flex-direction:column;gap:8px' }, rows), [['Cancel', () => UI.closeModal()]]); };
   const SMART = { extractAudio, removeBg, relightTool: () => App.smartEffect('tf.relight', ['lx', 'ly']), eraserTool: () => App.smartEffect('tf.eraser', ['cx', 'cy']), voiceEnh: () => App.voiceTool('enhance'), voiceIso: () => App.voiceTool('isolate') };
-  UI.clipTools = function (l) { const t = clipTools.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) t.push(['removeBg', 'Remove BG', 'mask'], ['relightTool', 'Relight', 'looks'], ['eraserTool', 'Eraser', 'mask']); if (l && (l.type === 'video' || l.type === 'audio')) t.push(['extractAudio', 'Extract audio', 'sound'], ['voiceEnh', 'Enhance voice', 'sound'], ['voiceIso', 'Isolate voice', 'volume']); return t; };
+  UI.clipTools = function (l) { const t = clipTools.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) t.push(['relightTool', 'Relight', 'looks'], ['eraserTool', 'Eraser', 'mask']); if (l && (l.type === 'video' || l.type === 'audio')) t.push(['extractAudio', 'Extract audio', 'sound'], ['voiceEnh', 'Enhance voice', 'sound'], ['voiceIso', 'Isolate voice', 'volume']); return t; };
   UI.openTool = function (id) { if (SMART[id]) return SMART[id](); return openTool.call(this, id); };
 })();
 
 // ---- what files work, and a prompt for asking an AI to write an effect ----------------------------
-const AI_EFFECT_PROMPT = `Write a video effect for the TwoFrame editor as one GLSL ES 1.0 fragment shader. Follow these rules exactly.
+const AI_EFFECT_PROMPT = `Write a video effect for the Maximum editor as one GLSL ES 1.0 fragment shader. Follow these rules exactly.
 
 1. Start with header comments:
 // @name <short effect name>
@@ -14941,7 +14998,7 @@ UI.effectHelp = function () {
   const ta = el('textarea', { class: 'labcode', readonly: true, style: { minHeight: '220px', fontSize: '12px' } }); ta.value = AI_EFFECT_PROMPT; ta.addEventListener('keydown', (e) => e.stopPropagation());
   const kinds = Lab.KINDS.map(([, n, d]) => el('div', {}, el('b', {}, n), el('p', { class: 'hint' }, d)));
   this.modal('Custom effect files', el('div', { class: 'qs' },
-    el('div', {}, el('b', {}, 'Files you can import'), el('p', { class: 'hint' }, 'Text files of shader code ending in .fs, .isf, .frag, .glsl or .txt, TwoFrame effect files (.tfx), .xml and .zip effect packs, and .cube colour tables. TwoFrame tells the kinds of code apart by what is written inside:')), ...kinds,
+    el('div', {}, el('b', {}, 'Files you can import'), el('p', { class: 'hint' }, 'Text files of shader code ending in .fs, .isf, .frag, .glsl or .txt, Maximum effect files (.tfx), .xml and .zip effect packs, and .cube colour tables. Maximum tells the kinds of code apart by what is written inside:')), ...kinds,
     el('div', {}, el('b', {}, 'Refused'), el('p', { class: 'hint' }, 'while and do loops, for loops without a fixed count of 256 or less, multi-pass ISF shaders, code over 20,000 characters, and anything too slow on the small test picture.')),
     el('div', {}, el('b', {}, 'Ask an AI to write one'), el('p', { class: 'hint' }, 'Copy this, paste it into any AI chat, and replace the last line with the effect you want. Then copy the code it gives you, open Effect Lab, tap Paste code, check the preview and Save.')), ta),
     [['Close', () => this.closeModal()], ['Open Effect Lab', () => { this.closeModal(); this.effectLab(); }], ['Copy the prompt', async () => { try { await navigator.clipboard.writeText(AI_EFFECT_PROMPT); toast('Prompt copied.'); } catch (e) { ta.focus(); ta.select(); toast('Select all and copy it from the box.'); } }, 'primary']], 'big');
@@ -14985,7 +15042,7 @@ const TFLog = {
   UI.storageScreen = async function () {
     await storage.call(this); const body = $('#modal .mbody'); if (!body) return;
     let n = '?', mcount = '?'; try { n = (await Store.all('projects')).length; mcount = (await Store.all('media')).length; } catch (e) { n = 'unreadable: ' + e.message; }
-    const report = ['TwoFrame save report', navigator.userAgent, 'storage working: ' + Store.ok, 'projects stored: ' + n + ', media stored: ' + mcount, 'last project save: ' + (Store.lastSave ? new Date(Store.lastSave).toLocaleTimeString() : 'none this visit'), 'last save error: ' + (Store.lastErr || 'none'), 'in a frame: ' + (window.top !== window), 'address: ' + location.origin, '', ...TFLog.all()].join('\n');
+    const report = ['Maximum save report', navigator.userAgent, 'storage working: ' + Store.ok, 'projects stored: ' + n + ', media stored: ' + mcount, 'last project save: ' + (Store.lastSave ? new Date(Store.lastSave).toLocaleTimeString() : 'none this visit'), 'last save error: ' + (Store.lastErr || 'none'), 'in a frame: ' + (window.top !== window), 'address: ' + location.origin, '', ...TFLog.all()].join('\n');
     const ta = el('textarea', { class: 'labcode', readonly: true, style: { minHeight: '150px', fontSize: '11px' } }); ta.value = report;
     body.append(el('div', { class: 'sect' }, 'Save report'), el('p', { class: 'hint' }, 'If projects are not saving or loading, copy this and send it.'), ta,
       el('div', { class: 'btnrow' }, el('button', { class: 'btn primary', onclick: async () => { try { await navigator.clipboard.writeText(report); toast('Report copied.'); } catch (e) { ta.focus(); ta.select(); } } }, 'Copy report')));
@@ -15188,9 +15245,183 @@ void main(){ vec4 s = oGet(vUv); if (uCutOn < 0.5) { gl_FragColor = s; return; }
   if (invert) { a = 1.0 - a; c = tfUn(s); }
   float na = s.a * a; gl_FragColor = showmask ? vec4(vec3(a) * s.a, s.a) : vec4(c * na, na); }` }
   ]);
-  const d = EffectLib.get('tf.cutout'); if (d) { d.pro = false; d.main = 4; d.tags = 'keying,background,remove,person,cutout'; }
+  // Remove Background was taken out of the app (23 Nov). It stays defined only so older projects that use it still open.
+  const d = EffectLib.get('tf.cutout'); if (d) { d.pro = false; d.main = 4; d.tags = 'keying,background,remove,person,cutout'; d.retired = true; }
   // The frame a video layer was last drawn with, for effects that must look at the very same picture.
   const vf = Renderer.videoFrame; Renderer.videoFrame = async function (layer, srcT) { const fr = await vf.apply(this, arguments); try { const r = Runtime.get(layer); r.lastFr = fr; r.lastSrcF = srcT * ((layer.video && layer.video.srcFps) || 30); } catch (e) { } return fr; };
+}
+
+</script>
+<script>
+'use strict';
+// ---- Remove Background with Apple's on-device cutout (iPhone app only) ---------------------------
+// Each frame of the clip is handed to the native helper, which runs Apple's person cutout (and, for
+// photos, Apple's subject cutout) on the phone's AI chip. The masks come back and are stored per
+// frame with the same storage the editor already uses, so playback and export read them from there.
+// The existing Remove Background shader still smooths the edge and cleans the colour spill.
+const AppleCut = {
+  KIND: 'apple', SEND: 1024, MASK: 768,
+  cid(m) { return Matte.cid(m.id, this.KIND, false); },
+  sizes(m, L) { const k = L / Math.max(m.w || 1, m.h || 1); return [Math.max(16, Math.round((m.w || 1) * Math.min(1, k))), Math.max(16, Math.round((m.h || 1) * Math.min(1, k)))]; },
+  // The picture on screen for this clip, as a JPEG. Read straight away, so a later frame cannot sneak in.
+  grab(layer, m, fr) {
+    const [w, h] = this.sizes(m, this.SEND), c = this._c || (this._c = document.createElement('canvas')); c.width = w; c.height = h; const g = c.getContext('2d');
+    if (layer.type === 'image' && m.image) g.drawImage(m.image, 0, 0, w, h);
+    else if (fr && fr.tex) {
+      const E = engine, gl = E.gl, prog = E.program('cutcrop', VS_FULL, FS_HEAD + 'uniform sampler2D uTex; uniform vec4 uUV;\nvoid main(){ vec4 c = texture2D(uTex, mix(uUV.xy, uUV.zw, vUv)); gl_FragColor = vec4(c.rgb / max(c.a, 1e-4), 1.0); }');
+      const rt = E.rt('apple_in', w, h); E.draw(prog, rt, { uTex: fr, uUV: [0, 0, 1, 1] });
+      const px = new Uint8ClampedArray(w * h * 4); E.bindTarget(rt); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); g.putImageData(new ImageData(px, w, h), 0, 0);
+    } else return null;
+    return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+  },
+  async ask(m, jpeg, mode, session) {
+    const [w, h] = this.sizes(m, this.MASK); const r = await TFNative.mask(jpeg, w, h, mode, session);
+    if (!r || !r.png) return null;
+    const img = new Image(); img.src = 'data:image/png;base64,' + r.png; await img.decode();
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(img, 0, 0, w, h); cv.found = !!r.found; cv.ms = r.ms; return cv;
+  },
+  // Every frame of the clip, once, with a progress report. Frames already done are skipped.
+  async prepare(l, onP) {
+    const m = Media.items.get(l.mediaId); if (!m) throw new Error('Select a video or photo clip.');
+    const cid = this.cid(m); await Matte.open(cid);
+    const todo = Matte.framesOf(l).filter(i => !Matte.has(cid, i)); if (!todo.length) return { done: 0, total: 0 };
+    Matte.cancel = false; Matte.baking = true; const session = 'prep-' + l.id + '-' + Date.now();
+    const prevBusy = Exporter.busy; try { Player.pause(); } catch (e) { } await Renderer._lock; Exporter.busy = true;
+    const t0 = performance.now(); let done = 0;
+    try {
+      for (const idx of todo) {
+        if (Matte.cancel) break;
+        let fr = null; if (l.type !== 'image') { fr = await Renderer.videoFrameIdx(l, idx, 'exact', false); if (!fr) continue; }
+        const jpeg = this.grab(l, m, fr); if (!jpeg) continue;
+        const cv = await this.ask(m, jpeg, l.type === 'image' ? 'photo' : 'video', session); if (!cv) continue;
+        Matte.putCanvas(cid, idx, cv); done++;
+        const el = (performance.now() - t0) / 1000, left = el / done * (todo.length - done);
+        onP && onP(`Frame ${done} of ${todo.length}` + (done > 5 ? ` · about ${left < 90 ? Math.ceil(left) + ' s' : Math.ceil(left / 60) + ' min'} left` : ''), done / todo.length);
+        if (done % Matte.CH === 0) await Matte.flush(cid);
+      }
+    } finally { Exporter.busy = prevBusy; Matte.baking = false; TFNative.endSession(session); await Matte.flush(cid); try { Runtime.get(l).cutKey = ''; App.requestRender(); } catch (e) { } }
+    return { done, total: todo.length, stopped: Matte.cancel, perFrame: done ? (performance.now() - t0) / done : 0 };
+  },
+  async readyOf(l) { const m = Media.items.get(l.mediaId); if (!m) return { done: 0, total: 0 }; const cid = this.cid(m); await Matte.open(cid); const fr = Matte.framesOf(l); let done = 0; for (const i of fr) if (Matte.has(cid, i)) done++; return { done, total: fr.length }; },
+};
+
+// The effect's hook in the iPhone app. Same drawing as before; only where the masks come from changes.
+async function appleCutHook(layer, fxi, vals, t, R, list, src) {
+  const m = Media.items.get(layer.mediaId), r = Runtime.get(layer); if (!m || (layer.type !== 'video' && layer.type !== 'image')) return { uCutOn: 0 };
+  const playing = R && R.curMode === 'play';
+  const f = layer.type === 'video' ? (r.lastSrcF != null ? r.lastSrcF : 0) : 0, i0 = Math.max(0, Math.floor(f + 1e-4)), cid = AppleCut.cid(m);
+  let rec = Matte.mem.get(cid); if (!rec || !rec.index) { if (playing) Matte.open(cid); else { await Matte.open(cid); rec = Matte.mem.get(cid); } }
+  let have = false, stale = false; const slot = playing && src ? cutHoldSlot(layer.id) : -1;
+  if (rec && rec.index && Matte.has(cid, i0)) { const key = cid + ':' + i0 + ':' + rec.w;
+    if (r.cutKey === key && r.cutTex) have = true;
+    else { let a = Matte.get(cid, i0); if (!a && !playing) { await Matte.loadChunk(cid, Math.floor(i0 / Matte.CH)); a = Matte.get(cid, i0); }
+      if (a) { if (!r.cutTex) r.cutTex = engine.newTex(); uploadMatte(r.cutTex, a, rec.w, rec.h); r.cutKey = key; have = true; if (playing) Matte.warm(cid, i0 + 8); }
+      else if (playing && r.cutTex) { have = true; stale = true; } }
+  }
+  if (!have) {
+    const fr = layer.type === 'video' ? (r.lastFr && r.lastFr.tex ? r.lastFr : null) : null;
+    if (layer.type === 'video' && !fr) { if (!r.cutTex) return { uCutOn: 0 }; have = true; stale = true; }
+    else if (playing) {
+      // Playing a frame with no mask yet: ask for it in the background and keep the last picture with its own mask meanwhile.
+      if (!r.appleBusy) { const jpeg = AppleCut.grab(layer, m, fr); if (jpeg) { r.appleBusy = true; AppleCut.ask(m, jpeg, 'video', 'live-' + layer.id).then(cv => { if (cv) Matte.putCanvas(cid, i0, cv); }).catch(e => console.warn('cutout failed', e)).finally(() => { r.appleBusy = false; App.requestRender(); }); } }
+      if (!r.cutTex) return { uCutOn: 0 }; stale = true;
+    } else {
+      let cv = null; try { const jpeg = AppleCut.grab(layer, m, fr); if (jpeg) cv = await AppleCut.ask(m, jpeg, layer.type === 'image' ? 'photo' : 'video', 'live-' + layer.id); } catch (e) { console.warn('cutout failed', e); }
+      if (cv) { if (!r.cutTex) r.cutTex = engine.newTex(); engine.upload(r.cutTex, cv); r.cutKey = ''; try { Matte.putCanvas(cid, i0, cv); } catch (e) { } }
+      else if (!r.cutTex) return { uCutOn: 0 };
+    }
+  }
+  const U = (rt) => ({ uCut: rt, uCutOn: 1, uCutFloat: engine.floatRT ? 1 : 0 });
+  const draw = (rt) => { engine.clear(rt); engine.drawLayerTex(r.cutTex, m.w, m.h, worldTransform(layer, t, list), rt, layer.crop ? evalGroup(layer, 'crop', t) : null); };
+  if (slot >= 0) {
+    const hm = R.R('cut_hm' + slot), hp = R.R('cut_hp' + slot);
+    if (stale && r.cutHeld === slot + 1 && r.cutGen === cutHoldSlot.gen[slot]) { engine.copy(hp, src); return U(hm); }
+    draw(hm); engine.copy(src, hp); r.cutHeld = slot + 1; r.cutGen = cutHoldSlot.gen[slot]; return U(hm);
+  }
+  r.cutHeld = 0; const rt = R.R('cut_mask'); draw(rt); return U(rt);
+}
+
+if (TFNative.on) {
+  // The person-aware effects (Portrait Background and others) use Apple's cutout too.
+  const web = FX_HOOKS['tf.cutout']; FX_HOOKS['tf.cutout'] = (...a) => appleCutHook(...a);
+  FX_HOOKS['tf.cutout'].web = web;
+  for (const id of ['tf.portraitbg', 'tf.aura', 'tf.zoom3d']) FX_HOOKS[id] = (layer, fxi, vals, t, R, list, src) => (layer.type === 'video' || layer.type === 'image') ? appleCutHook(layer, fxi, vals, t, R, list) : { uCutOn: 0 };
+  const prep = Matte.prepare.bind(Matte), ready = Matte.readyOf.bind(Matte);
+  Matte.prepare = (l, vals, onP) => AppleCut.prepare(l, onP);
+  Matte.readyOf = (l, vals) => AppleCut.readyOf(l);
+  Matte.webPrepare = prep; Matte.webReadyOf = ready;
+  // Saving in the app: videos and pictures go to Photos, everything else to the share sheet.
+  const webSave = saveBlob;
+  saveBlob = async function (blob, name) {
+    try { const media = /^(video|image)\//.test(blob.type || '') || /\.(mp4|mov|m4v|png|jpe?g|gif)$/i.test(name);
+      const r = await TFNative.saveFile(blob, name, media ? 'photos' : 'share');
+      if (r && r.result === 'cancelled') return 'cancelled';
+      if (r && r.result === 'photos') { toast('Saved to Photos.'); return 'shared'; }
+      return 'shared';
+    } catch (e) { console.warn('native save failed, trying the web way', e); return webSave(blob, name); }
+  };
+}
+
+</script>
+<script>
+'use strict';
+// ---- Remove Background tool in the iPhone app ------------------------------------------------------
+// Every time the tool is opened, the phone is checked first and the result is shown in plain words:
+// which phone it is, its iOS version, whether Apple's cutout is there, how fast a test frame was, and
+// what that means for this clip. Only then can the cutout be started.
+const AppleCutUI = {
+  // Turns the native facts into a verdict. Kept here (not in the native code) so the wording can change without a new app build.
+  verdict(c, frames) {
+    const lines = [], why = [], warn = []; let can = true;
+    const iosMajor = parseInt(String(c.ios || '0'), 10) || 0;
+    lines.push(['Phone', (c.name || c.model || 'iPhone') + (c.chip ? ` (${c.chip} chip)` : '')]);
+    lines.push(['iOS', c.ios || 'unknown']);
+    lines.push(['Apple’s person cutout', c.person ? 'available' : 'not available']);
+    if (!c.person) { can = false; why.push(`Apple’s person cutout needs iOS 15 or later, and this phone has iOS ${c.ios || 'unknown'}.`); }
+    if (c.person && c.testError) { can = false; why.push('The speed test on this phone failed: ' + c.testError); }
+    if (c.thermal === 'critical') { can = false; why.push('The phone is too hot right now. iOS slows everything down to cool it. Let it cool for a few minutes and try again.'); }
+    if (c.person && !c.testError) {
+      const ms = Math.max(1, Math.round(c.ms || 0)), per = ms + 35;      // 35 ms covers handing each frame over and storing its mask
+      lines.push(['Speed test', `${ms} ms per frame`]);
+      if (frames > 1) { const s = frames * per / 1000; lines.push(['This clip', `${frames} frames, about ${s < 90 ? Math.max(1, Math.round(s)) + ' seconds' : Math.round(s / 60) + ' minutes'}`]); }
+      if (can) why.push(ms < 80 ? 'This phone can do it, and quickly.' : ms < 250 ? 'This phone can do it. It takes a little longer than on the newest iPhones.' : 'This phone can do it, but slowly. Short clips work best.');
+    }
+    if (c.lowPower) warn.push('Low Power Mode is on, which slows this down. Turning it off in Settings makes it faster.');
+    if (c.thermal === 'serious') warn.push('The phone is warm, so iOS may slow this down.');
+    if (c.memoryGB && c.memoryGB < 3.5) warn.push('This phone has less memory than newer models, so very long clips may take a while.');
+    if (c.subject) warn.push('For photos, Apple’s subject cutout is also available, so pets and objects can be cut out too.');
+    return { can, lines, why, warn };
+  },
+  async open(l) {
+    l = l || App.layer() || (UI.pickUnder && UI.pickUnder(['video', 'image']));
+    if (!l || (l.type !== 'video' && l.type !== 'image')) { toast('Select a video or photo first.'); return; }
+    const frames = Matte.framesOf(l).length;
+    UI.modal('Remove Background', el('div', {}, el('p', { class: 'hint' }, 'Checking this phone…'), el('div', { class: 'bar' }, el('i', { style: { width: '40%' } }))), [['Cancel', () => UI.closeModal()]]);
+    let c = null; try { c = await TFNative.check(); } catch (e) { c = { person: false, testError: errText(e) }; }
+    const v = this.verdict(c || {}, l.type === 'image' ? 1 : frames);
+    const body = el('div', { class: 'phonecheck' },
+      el('div', { class: 'pcgrid' }, v.lines.map(([k, val]) => [el('span', { class: 'hint' }, k), el('b', {}, val)]).flat()),
+      v.why.map(t => el('p', { class: v.can ? 'pcok' : 'pcno' }, t)),
+      v.warn.map(t => el('p', { class: 'hint' }, t)),
+      v.can ? el('p', { class: 'hint' }, 'Everything runs on this phone. Nothing is uploaded.') : null);
+    UI.modal(v.can ? 'This phone can remove backgrounds' : 'This phone can’t do it right now', body,
+      v.can ? [['Cancel', () => UI.closeModal()], ['Remove background', () => this.run(l), 'primary']] : [['OK', () => UI.closeModal()]]);
+  },
+  async run(l) {
+    UI.closeModal();
+    App.sel = l.id; App.selIds = new Set([l.id]);
+    if (!l.effects.some(f => f.defId === 'tf.cutout')) App.addEffect('tf.cutout');
+    await UI.prepareClip(l);
+    UI.openTool('fx');
+  },
+};
+
+if (TFNative.on) {
+  // The effect is offered again in the app, without the two settings that only applied to the browser's model.
+  { const d = EffectLib.get('tf.cutout'); if (d) { d.retired = false; d.desc = 'Removes the background behind people with Apple’s cutout, on this phone. Photos can also cut out pets and objects.'; for (const p of d.params) if (p.id === 'model' || p.id === 'zoomIn') p.hide = () => true; } }
+  const ct = UI.clipTools, ot = UI.openTool;
+  UI.clipTools = function (l) { const t = ct.call(this, l); if (l && (l.type === 'video' || l.type === 'image')) { const at = t.findIndex(x => x[0] === 'relightTool'); t.splice(at < 0 ? t.length : at, 0, ['appleCut', 'Remove BG', 'mask']); } return t; };
+  UI.openTool = function (id) { if (id === 'appleCut' || id === 'removeBg') return AppleCutUI.open(); return ot.call(this, id); };
 }
 
 </script>
@@ -15211,7 +15442,7 @@ Object.assign(UI, {
     const cur = Layout.override || 'auto';
     const pick = (v) => { Layout.override = v; this.closeModal(); toast(v === 'auto' ? 'Layout follows your device.' : `Using the ${v === 'desktop' ? 'computer' : 'phone'} layout.`); };
     this.modal('Layout', el('div', {},
-      el('p', { class: 'hint' }, `This device looks like a ${Layout.device}. TwoFrame picks a layout to match, or you can choose one.`),
+      el('p', { class: 'hint' }, `This device looks like a ${Layout.device}. Maximum picks a layout to match, or you can choose one.`),
       el('div', { class: 'choice' }, [['auto', 'Automatic', 'Match this device'], ['desktop', 'Computer', 'Panels and a big timeline'], ['mobile', 'Phone', 'Tool bar along the bottom']].map(([v, n, d]) =>
         el('button', { class: 'choicebtn' + (cur === v ? ' on' : ''), onclick: () => pick(v) }, el('b', {}, n), el('small', {}, d))))
     ), [['Close', () => this.closeModal()]]);
@@ -15228,27 +15459,27 @@ function showFatal(title, detail) {
   s.innerHTML = '';
   s.append(el('div', { class: 'fatalbox' },
     el('h2', {}, title), el('p', {}, detail),
-    el('p', { class: 'hint' }, 'Try reloading the page. On iPhone, open TwoFrame in Safari (not inside another app). If it keeps happening, take a screenshot of this message.'),
+    el('p', { class: 'hint' }, 'Try reloading the page. On iPhone, open Maximum in Safari (not inside another app). If it keeps happening, take a screenshot of this message.'),
     el('button', { class: 'btn primary', onclick: () => location.reload() }, 'Reload')));
 }
 
 let booted = false;
 window.addEventListener('error', (e) => {
-  if (!booted) showFatal('TwoFrame couldn’t start', (e.error && e.error.message) || (e && e.message) || 'Unknown error');
+  if (!booted) showFatal('Maximum couldn’t start', (e.error && e.error.message) || (e && e.message) || 'Unknown error');
   else console.warn(e.error || e.message);
 });
 window.addEventListener('unhandledrejection', (e) => {
   const msg = (e.reason && e.reason.message) || String(e.reason || '');
-  if (!booted) showFatal('TwoFrame couldn’t start', msg);
+  if (!booted) showFatal('Maximum couldn’t start', msg);
   else { console.warn(e.reason); if (msg && !/abort/i.test(msg)) toast('Something went wrong: ' + msg, 5000); }
 });
 
 (async () => {
   fillIcons();
   const test = document.createElement('canvas');
-  if (!test.getContext('webgl2')) { showFatal('This browser can’t run TwoFrame', 'TwoFrame needs WebGL 2 for its effects. Use a recent Safari, Chrome, Edge or Firefox.'); return; }
+  if (!test.getContext('webgl2')) { showFatal('This browser can’t run Maximum', 'Maximum needs WebGL 2 for its effects. Use a recent Safari, Chrome, Edge or Firefox.'); return; }
   try { await App.init(); booted = true; }
-  catch (e) { console.error(e); showFatal('TwoFrame couldn’t start', errText(e)); }
+  catch (e) { console.error(e); showFatal('Maximum couldn’t start', errText(e)); }
 })();
 
 </script>
