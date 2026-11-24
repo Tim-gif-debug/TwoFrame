@@ -30,12 +30,19 @@ workflows:
       - name: Create the iOS project
         script: |
           set -e
+          # The helper files may sit in their folders or loose at the top of the repository; both work.
+          mkdir -p scripts native
+          for f in postadd.js addnative.rb PrivacyInfo.xcprivacy; do if [ -f "$f" ]; then cp "$f" scripts/; fi; done
+          for f in TFNativePlugin.swift TFBridgeViewController.swift; do if [ -f "$f" ]; then cp "$f" native/; fi; done
+          MISSING=""
+          for f in scripts/postadd.js scripts/addnative.rb scripts/PrivacyInfo.xcprivacy native/TFNativePlugin.swift native/TFBridgeViewController.swift; do [ -f "$f" ] || MISSING="$MISSING $(basename $f)"; done
+          if [ -n "$MISSING" ]; then echo "These files are missing from the repository:$MISSING"; echo "Upload them (from Maximum-iOS.zip) and start the build again."; exit 1; fi
           npx cap add ios
           node scripts/postadd.js
           # Apple's person cutout and subject cutout both need iOS 17 (iPhone XS, XR, SE 2nd generation and newer).
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '17.0'/" ios/App/Podfile
-          gem list -i xcodeproj >/dev/null || gem install xcodeproj
+          gem list -i xcodeproj >/dev/null || gem install xcodeproj || gem install --user-install xcodeproj
           ruby scripts/addnative.rb
           grep -n "IPHONEOS_DEPLOYMENT_TARGET\|platform :ios" ios/App/App.xcodeproj/project.pbxproj ios/App/Podfile
           grep -n "TFBridgeViewController" ios/App/App/Base.lproj/Main.storyboard
